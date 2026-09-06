@@ -1,0 +1,192 @@
+syntax = "proto3";
+
+package pipeline;
+
+option go_package = "github.com/Ajay01103/go-notion/pkg/pipelinepb;pipelinepb";
+
+message AssetUploadCompleted {
+  string asset_id = 1;
+  string org_id = 2;
+  string source_uri = 3;
+  repeated string requested_subtitle_languages = 4;
+  string idempotency_key = 5;
+  int64 timestamp_unix = 6;
+}
+
+message ProbeRequested {
+  string run_id = 1;
+  string asset_id = 2;
+  string source_uri = 3;
+  string org_id = 4;
+  int32 attempt = 5;
+  string idempotency_key = 6;
+}
+
+message ProbeResult {
+  double duration = 1;
+  int32 width = 2;
+  int32 height = 3;
+  string video_codec = 4;
+  string audio_codec = 5;
+  int64 bit_rate = 6;
+}
+
+message ProbeCompleted {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string source_uri = 4;
+  ProbeResult result = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message ProbeFailed {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message TranscodeRequested {
+  string run_id = 1;
+  string asset_id = 2;
+  string source_uri = 3;
+  string output_prefix = 4;
+  string org_id = 5;
+  int32 attempt = 6;
+  string idempotency_key = 7;
+}
+
+message TranscodeCompleted {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string output_prefix = 4;
+  string master_playlist_location = 5;
+  int32 rendition_count = 6;
+  int32 attempt = 7;
+  int64 timestamp_unix = 8;
+}
+
+message TranscodeFailed {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message ThumbnailRequested {
+  string run_id = 1;
+  string asset_id = 2;
+  string source_uri = 3;
+  string output_prefix = 4;
+  string org_id = 5;
+  int32 attempt = 6;
+  string idempotency_key = 7;
+}
+
+message ThumbnailCompleted {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string location = 4;
+  int32 attempt = 5;
+  int64 timestamp_unix = 6;
+}
+
+message ThumbnailFailed {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message StoryboardRequested {
+  string run_id = 1;
+  string asset_id = 2;
+  string source_uri = 3;
+  string output_prefix = 4;
+  string org_id = 5;
+  int32 attempt = 6;
+  string idempotency_key = 7;
+}
+
+message StoryboardCompleted {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string sprite_location = 4;
+  string vtt_location = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message StoryboardFailed {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message SubtitleRequested {
+  string run_id = 1;
+  string asset_id = 2;
+  string source_uri = 3;
+  string language = 4;
+  string output_prefix = 5;
+  string org_id = 6;
+  int32 attempt = 7;
+  string idempotency_key = 8;
+}
+
+message SubtitleCompleted {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string language = 4;
+  string vtt_location = 5;
+  int32 attempt = 6;
+  int64 timestamp_unix = 7;
+}
+
+message SubtitleFailed {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string language = 4;
+  string error_code = 5;
+  string error_message = 6;
+  int32 attempt = 7;
+  int64 timestamp_unix = 8;
+}
+
+message PipelineRunCompleted {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string playback_id = 4;
+  map<string, string> artifact_locations = 5;
+  int64 timestamp_unix = 6;
+}
+
+message PipelineRunFailed {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int64 timestamp_unix = 6;
+}

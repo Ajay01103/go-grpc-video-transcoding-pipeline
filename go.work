@@ -1,0 +1,15 @@
+go 1.25.0
+
+use (
+	./pkg
+	./services/asset
+	./services/auth
+	./services/job
+	./services/playback
+	./services/probe
+	./services/storyboard
+	./services/subtitle
+	./services/thumbnail
+	./services/transcode
+	./services/webhook
+)

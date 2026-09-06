@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package assets;
+
+option go_package = "github.com/Ajay01103/go-notion/asset/gen/pb;pb";
+
+message Asset {
+  string asset_id = 1;
+  string org_id = 2;
+  string title = 3;
+  string status = 4;
+  string source_uri = 5;
+  int64 duration_ms = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message CreateAssetRequest {
+  string org_id = 1;
+  string title = 2;
+}
+
+message CreateAssetResponse {
+  Asset asset = 1;
+}
+
+message GetAssetRequest {
+  string asset_id = 1;
+}
+
+message GetAssetResponse {
+  Asset asset = 1;
+}
+
+message ListAssetsRequest {
+  string org_id = 1;
+  int32 limit = 2;
+}
+
+message ListAssetsResponse {
+  repeated Asset assets = 1;
+}
+
+message CreateUploadURLRequest {
+  string asset_id = 1;
+}
+
+message CreateUploadURLResponse {
+  string asset_id = 1;
+  string upload_url = 2;
+  string bucket = 3;
+  string object_key = 4;
+  int64 expires_at_unix = 5;
+}
+
+message CompleteUploadRequest {
+  string asset_id = 1;
+  string source_uri = 2;
+}
+
+message CompleteUploadResponse {
+  bool ok = 1;
+}
+
+service AssetService {
+  rpc CreateAsset(CreateAssetRequest) returns (CreateAssetResponse);
+  rpc GetAsset(GetAssetRequest) returns (GetAssetResponse);
+  rpc ListAssets(ListAssetsRequest) returns (ListAssetsResponse);
+  rpc CreateUploadURL(CreateUploadURLRequest) returns (CreateUploadURLResponse);
+  rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
+}
