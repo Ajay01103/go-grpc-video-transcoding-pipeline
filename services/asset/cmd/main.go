@@ -10,16 +10,20 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/Ajay01103/go-notion/asset/config"
-	"github.com/Ajay01103/go-notion/asset/db"
-	"github.com/Ajay01103/go-notion/asset/gen/pb"
-	"github.com/Ajay01103/go-notion/asset/gen/pb/pbconnect"
-	"github.com/Ajay01103/go-notion/asset/internal/repository"
-	"github.com/Ajay01103/go-notion/asset/internal/service"
-	"github.com/Ajay01103/go-notion/pkg/events"
-	"github.com/Ajay01103/go-notion/pkg/pipelinepb"
+	"github.com/Ajay01103/go-mux/asset/config"
+	"github.com/Ajay01103/go-mux/asset/db"
+	"github.com/Ajay01103/go-mux/asset/gen/pb"
+	"github.com/Ajay01103/go-mux/asset/gen/pb/pbconnect"
+	"github.com/Ajay01103/go-mux/asset/internal/repository"
+	"github.com/Ajay01103/go-mux/asset/internal/service"
+	"github.com/Ajay01103/go-mux/pkg/events"
+	"github.com/Ajay01103/go-mux/pkg/interceptor"
+	pkglogger "github.com/Ajay01103/go-mux/pkg/logger"
+	"github.com/Ajay01103/go-mux/pkg/pipelinepb"
+	"github.com/Ajay01103/go-mux/pkg/storage"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -30,9 +34,15 @@ type assetHandler struct {
 }
 
 func (h *assetHandler) CreateAsset(ctx context.Context, req *connect.Request[pb.CreateAssetRequest]) (*connect.Response[pb.CreateAssetResponse], error) {
-	orgID, err := uuid.Parse(req.Msg.GetOrgId())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	// org_id is optional for now: an empty value is defaulted to the dev org
+	// inside the service until multi-org support lands.
+	var orgID uuid.UUID
+	if raw := req.Msg.GetOrgId(); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		orgID = parsed
 	}
 	asset, err := h.service.CreateAsset(ctx, orgID, req.Msg.GetTitle())
 	if err != nil {
@@ -57,9 +67,13 @@ func (h *assetHandler) GetAsset(ctx context.Context, req *connect.Request[pb.Get
 }
 
 func (h *assetHandler) ListAssets(ctx context.Context, req *connect.Request[pb.ListAssetsRequest]) (*connect.Response[pb.ListAssetsResponse], error) {
-	orgID, err := uuid.Parse(req.Msg.GetOrgId())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	var orgID uuid.UUID
+	if raw := req.Msg.GetOrgId(); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		orgID = parsed
 	}
 	assets, err := h.service.ListAssets(ctx, orgID, int(req.Msg.GetLimit()))
 	if err != nil {
@@ -77,7 +91,7 @@ func (h *assetHandler) CreateUploadURL(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	upload, err := h.service.CreateUploadURL(ctx, assetID, h.config.RustFSURL, h.config.RustFSBucket, h.config.UploadURLTTL)
+	upload, err := h.service.CreateUploadURL(ctx, assetID, h.config.RustFSBucket, h.config.UploadURLTTL)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -117,9 +131,10 @@ func toProtoAsset(asset *repository.Asset) *pb.Asset {
 	}
 }
 
-func consumePipelineEvents(ctx context.Context, js jetstream.JetStream, repo *repository.AssetRepo) {
+func consumePipelineEvents(ctx context.Context, logger *zap.Logger, js jetstream.JetStream, repo *repository.AssetRepo) {
 	consumer, err := js.Consumer(ctx, events.StreamPipelineEvents, events.ConsumerAssetStatusUpdater)
 	if err != nil {
+		logger.Error("asset status consumer unavailable", zap.Error(err))
 		return
 	}
 	for {
@@ -160,8 +175,17 @@ func main() {
 }
 
 func run() error {
+	logger := pkglogger.New()
+	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
+	logger.Info("ASSET SERVICE starting")
+
 	cfg, err := config.Load()
 	if err != nil {
+		logger.Error("cannot load config", zap.Error(err))
 		return fmt.Errorf("load config: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -172,38 +196,50 @@ func run() error {
 	})
 	cancel()
 	if err != nil {
+		logger.Error("cannot connect to scylladb", zap.Error(err))
 		return fmt.Errorf("connect to scylladb: %w", err)
 	}
 	defer session.Close()
 	repo := repository.NewAssetRepo(session)
-	if err := repo.EnsureSchema(); err != nil {
-		return fmt.Errorf("ensure schema: %w", err)
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := db.Migrate(migrateCtx, session); err != nil {
+		migrateCancel()
+		logger.Error("cannot run migrations", zap.Error(err))
+		return fmt.Errorf("run migrations: %w", err)
 	}
+	migrateCancel()
+	logger.Info("database schema is up-to-date")
 	js, nc, err := events.Connect(context.Background(), cfg.NATSURL)
 	if err != nil {
+		logger.Error("cannot connect to nats", zap.Error(err))
 		return fmt.Errorf("connect to nats: %w", err)
 	}
 	defer nc.Drain()
 	if err := events.EnsureStreams(context.Background(), js); err != nil {
+		logger.Error("cannot ensure event streams", zap.Error(err))
 		return fmt.Errorf("ensure event streams: %w", err)
 	}
 	if err := events.EnsureTerminalConsumers(context.Background(), js); err != nil {
+		logger.Error("cannot ensure terminal consumers", zap.Error(err))
 		return fmt.Errorf("ensure terminal consumers: %w", err)
 	}
-	service := service.NewAssetService(repo, events.NewPublisher(js))
+	logger.Info("event streams and consumers are ready", zap.String("nats", cfg.NATSURL))
+	storageConfig := storage.ConfigFromEnv()
+	service := service.NewAssetService(repo, events.NewPublisher(js), storage.New(storageConfig), storageConfig.Bucket)
 	handler := &assetHandler{service: service, config: cfg}
-	path, rpcHandler := pbconnect.NewAssetServiceHandler(handler)
+	path, rpcHandler := pbconnect.NewAssetServiceHandler(handler, connect.WithInterceptors(interceptor.NewLoggingInterceptor(logger)))
 	mux := http.NewServeMux()
 	mux.Handle(path, rpcHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	server := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: mux}
 	consumerCtx, stopConsumer := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopConsumer()
-	go consumePipelineEvents(consumerCtx, js, repo)
+	go consumePipelineEvents(consumerCtx, logger, js, repo)
 	go reconcileAssets(consumerCtx, service, cfg.ReconcileInterval, cfg.ReconcileAge)
 	go func() {
+		logger.Info("ASSET SERVICE started at ConnectRPC server", zap.String("addr", ":"+cfg.HTTPPort))
 		if serveErr := server.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "asset HTTP server exited: %v\n", serveErr)
+			logger.Error("asset HTTP server exited", zap.Error(serveErr))
 			stopConsumer()
 		}
 	}()

@@ -2,25 +2,29 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/Ajay01103/go-notion/job/config"
-	"github.com/Ajay01103/go-notion/job/db"
-	"github.com/Ajay01103/go-notion/job/internal/activity"
-	"github.com/Ajay01103/go-notion/job/internal/orchestrator"
-	"github.com/Ajay01103/go-notion/job/internal/repository"
-	"github.com/Ajay01103/go-notion/pkg/events"
-	playbackconnect "github.com/Ajay01103/go-notion/playback/gen/pb/pbconnect"
+	"connectrpc.com/connect"
+	"github.com/Ajay01103/go-mux/pkg/interceptor"
+	"github.com/Ajay01103/go-mux/job/config"
+	"github.com/Ajay01103/go-mux/job/db"
+	"github.com/Ajay01103/go-mux/job/gen/pb"
+	jobconnect "github.com/Ajay01103/go-mux/job/gen/pb/pbconnect"
+	"github.com/Ajay01103/go-mux/job/internal/orchestrator"
+	"github.com/Ajay01103/go-mux/job/internal/repository"
+	"github.com/Ajay01103/go-mux/pkg/events"
+	pkglogger "github.com/Ajay01103/go-mux/pkg/logger"
+	playbackconnect "github.com/Ajay01103/go-mux/playback/gen/pb/pbconnect"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func main() {
@@ -31,8 +35,13 @@ func main() {
 }
 
 func run() error {
-	logger, _ := zap.NewProduction()
+	logger := pkglogger.New()
 	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
+	logger.Info("JOB SERVICE starting")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -45,7 +54,6 @@ func run() error {
 		Port:              cfg.ScyllaPort,
 		Username:          cfg.ScyllaUsername,
 		Password:          cfg.ScyllaPassword,
-		Consistency:       0,
 		Datacenter:        cfg.ScyllaDatacenter,
 		ReplicationFactor: cfg.ReplicationFactor,
 	})
@@ -61,9 +69,12 @@ func run() error {
 	}
 	defer nc.Drain()
 	repo := repository.NewJobRepo(session)
-	if err := repo.EnsureSchema(); err != nil {
-		return fmt.Errorf("ensure schema: %w", err)
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := db.Migrate(migrateCtx, session); err != nil {
+		migrateCancel()
+		return fmt.Errorf("run migrations: %w", err)
 	}
+	migrateCancel()
 	if err := events.EnsureStreams(context.Background(), js); err != nil {
 		return fmt.Errorf("ensure event streams: %w", err)
 	}
@@ -73,13 +84,17 @@ func run() error {
 	jobOrchestrator := orchestrator.New(repo, events.NewPublisher(js))
 	playbackClient := playbackconnect.NewPlaybackServiceClient(http.DefaultClient, cfg.PlaybackURL)
 	jobOrchestrator.SetPlaybackCreator(orchestrator.NewPlaybackCreator(playbackClient))
+
 	consumerCtx, stopConsumer := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopConsumer()
-	go consumeUploadEvents(consumerCtx, js, jobOrchestrator)
-	go consumeProbeResults(consumerCtx, js, jobOrchestrator)
-	go consumeStepResults(consumerCtx, js, jobOrchestrator)
 
-	pipelineActivity := activity.NewPipelineActivity(repo)
+	// WaitGroup ensures in-flight NAKs complete before nc.Drain().
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); consumeUploadEvents(consumerCtx, js, jobOrchestrator) }()
+	go func() { defer wg.Done(); consumeProbeResults(consumerCtx, js, jobOrchestrator) }()
+	go func() { defer wg.Done(); consumeStepResults(consumerCtx, js, jobOrchestrator) }()
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -87,162 +102,15 @@ func run() error {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	mux.HandleFunc("/pipeline/status", func(w http.ResponseWriter, r *http.Request) {
-		assetID := r.URL.Query().Get("asset_id")
-		if assetID == "" {
-			http.Error(w, "asset_id is required", http.StatusBadRequest)
-			return
-		}
-		parsed, err := uuid.Parse(assetID)
-		if err != nil {
-			http.Error(w, "invalid asset_id", http.StatusBadRequest)
-			return
-		}
-		rows, err := repo.GetPipelineStatus(r.Context(), parsed)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(rows)
-	})
-
-	mux.HandleFunc("/pipeline/probe", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		var reqBody struct {
-			AssetID    string `json:"asset_id"`
-			SourceFile string `json:"source_file"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		assetID, err := uuid.Parse(reqBody.AssetID)
-		if err != nil {
-			http.Error(w, "invalid asset_id", http.StatusBadRequest)
-			return
-		}
-		result, err := pipelineActivity.ProbeAsset(r.Context(), activity.ProbeAssetInput{
-			AssetID:    assetID,
-			SourceFile: reqBody.SourceFile,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(result)
-	})
-
-	mux.HandleFunc("/pipeline/transcode", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		var reqBody struct {
-			AssetID   string `json:"asset_id"`
-			SourceURI string `json:"source_uri"`
-			OutputDir string `json:"output_dir"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if reqBody.OutputDir == "" {
-			reqBody.OutputDir = filepath.Join("/tmp", reqBody.AssetID)
-		}
-		assetID, err := uuid.Parse(reqBody.AssetID)
-		if err != nil {
-			http.Error(w, "invalid asset_id", http.StatusBadRequest)
-			return
-		}
-		if err := pipelineActivity.TranscodeLadder(r.Context(), activity.TranscodeLadderInput{
-			AssetID:   assetID,
-			SourceURI: reqBody.SourceURI,
-			OutputDir: reqBody.OutputDir,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	mux.HandleFunc("/pipeline/thumbnail", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		var reqBody struct {
-			AssetID   string `json:"asset_id"`
-			SourceURI string `json:"source_uri"`
-			OutputDir string `json:"output_dir"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if reqBody.OutputDir == "" {
-			reqBody.OutputDir = filepath.Join("/tmp", reqBody.AssetID)
-		}
-		assetID, err := uuid.Parse(reqBody.AssetID)
-		if err != nil {
-			http.Error(w, "invalid asset_id", http.StatusBadRequest)
-			return
-		}
-		if err := pipelineActivity.GenerateThumbnail(r.Context(), activity.GenerateThumbnailInput{
-			AssetID:   assetID,
-			SourceURI: reqBody.SourceURI,
-			OutputDir: reqBody.OutputDir,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	mux.HandleFunc("/pipeline/storyboard", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		var reqBody struct {
-			AssetID   string `json:"asset_id"`
-			SourceURI string `json:"source_uri"`
-			OutputDir string `json:"output_dir"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if reqBody.OutputDir == "" {
-			reqBody.OutputDir = filepath.Join("/tmp", reqBody.AssetID)
-		}
-		assetID, err := uuid.Parse(reqBody.AssetID)
-		if err != nil {
-			http.Error(w, "invalid asset_id", http.StatusBadRequest)
-			return
-		}
-		if err := pipelineActivity.GenerateStoryboard(r.Context(), activity.GenerateStoryboardInput{
-			AssetID:   assetID,
-			SourceURI: reqBody.SourceURI,
-			OutputDir: reqBody.OutputDir,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	// ConnectRPC surface for pipeline status/cancel/retry.
+	jobHandler := &jobRPCHandler{repo: repo, orchestrator: jobOrchestrator}
+	rpcPath, rpcHandler := jobconnect.NewJobServiceHandler(jobHandler, connect.WithInterceptors(interceptor.NewLoggingInterceptor(logger)))
+	mux.Handle(rpcPath, rpcHandler)
 
 	addr := fmt.Sprintf(":%s", cfg.HTTPPort)
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
-		logger.Info("job service started", zap.String("addr", addr))
+		logger.Info("JOB SERVICE started at ConnectRPC server", zap.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("listen and serve", zap.Error(err))
 			os.Exit(1)
@@ -250,6 +118,7 @@ func run() error {
 	}()
 
 	<-consumerCtx.Done()
+	wg.Wait()
 	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	return srv.Shutdown(ctxShutdown)
@@ -292,7 +161,13 @@ func consumeProbeResults(ctx context.Context, js jetstream.JetStream, jobOrchest
 			continue
 		}
 		for message := range batch.Messages() {
-			if err := jobOrchestrator.HandleProbeCompleted(ctx, message.Data()); err != nil {
+			var handleErr error
+			if message.Subject() == events.SubjectProbeFailed {
+				handleErr = jobOrchestrator.HandleStepFailed(ctx, message.Subject(), message.Data())
+			} else {
+				handleErr = jobOrchestrator.HandleProbeCompleted(ctx, message.Data())
+			}
+			if handleErr != nil {
 				_ = message.Nak()
 				continue
 			}
@@ -313,9 +188,10 @@ func consumeStepResults(ctx context.Context, js jetstream.JetStream, jobOrchestr
 		}
 		for message := range batch.Messages() {
 			var handleErr error
-			if message.Subject() == events.SubjectSubtitleFailed {
+			switch message.Subject() {
+			case events.SubjectTranscodeFailed, events.SubjectThumbnailFailed, events.SubjectStoryboardFailed, events.SubjectSubtitleFailed:
 				handleErr = jobOrchestrator.HandleStepFailed(ctx, message.Subject(), message.Data())
-			} else {
+			default:
 				handleErr = jobOrchestrator.HandleStepCompleted(ctx, message.Subject(), message.Data())
 			}
 			if handleErr != nil {
@@ -325,4 +201,100 @@ func consumeStepResults(ctx context.Context, js jetstream.JetStream, jobOrchestr
 			_ = message.Ack()
 		}
 	}
+}
+
+type jobRPCHandler struct {
+	jobconnect.UnimplementedJobServiceHandler
+	repo         *repository.JobRepo
+	orchestrator *orchestrator.Orchestrator
+}
+
+func (h *jobRPCHandler) GetPipelineStatus(ctx context.Context, req *connect.Request[pb.GetPipelineStatusRequest]) (*connect.Response[pb.GetPipelineStatusResponse], error) {
+	var run *repository.PipelineRun
+	var err error
+	if req.Msg.GetRunId() != "" {
+		runID, parseErr := uuid.Parse(req.Msg.GetRunId())
+		if parseErr != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, parseErr)
+		}
+		run, err = h.repo.GetRunByRunID(ctx, runID)
+	} else {
+		assetID, parseErr := uuid.Parse(req.Msg.GetAssetId())
+		if parseErr != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, parseErr)
+		}
+		run, err = h.repo.GetRun(ctx, assetID)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if run == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("pipeline run not found"))
+	}
+	steps, err := h.repo.GetStepsForRun(ctx, run.RunID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	response := &pb.GetPipelineStatusResponse{
+		Run: &pb.PipelineRunSummary{
+			RunId:      run.RunID.String(),
+			AssetId:    run.AssetID.String(),
+			OrgId:      run.OrgID.String(),
+			Status:     run.Status,
+			PlaybackId: run.PlaybackID.String(),
+		},
+		Steps: make([]*pb.PipelineStepStatus, 0, len(steps)),
+	}
+	for _, step := range steps {
+		response.Steps = append(response.Steps, &pb.PipelineStepStatus{
+			RunId:     step.RunID.String(),
+			AssetId:   step.AssetID.String(),
+			Step:      step.Step,
+			Status:    step.Status,
+			UpdatedAt: timestamppb.New(step.UpdatedAt).AsTime().Format(time.RFC3339Nano),
+		})
+	}
+	return connect.NewResponse(response), nil
+}
+
+func (h *jobRPCHandler) CancelPipeline(ctx context.Context, req *connect.Request[pb.CancelPipelineRequest]) (*connect.Response[pb.CancelPipelineResponse], error) {
+	runID, err := uuid.Parse(req.Msg.GetRunId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := h.orchestrator.CancelPipeline(ctx, runID); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	return connect.NewResponse(&pb.CancelPipelineResponse{Ok: true}), nil
+}
+
+func (h *jobRPCHandler) RetryPipeline(ctx context.Context, req *connect.Request[pb.RetryPipelineRequest]) (*connect.Response[pb.RetryPipelineResponse], error) {
+	runID, err := uuid.Parse(req.Msg.GetRunId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	run, err := h.repo.GetRunByRunID(ctx, runID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if run == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("pipeline run not found"))
+	}
+	steps, err := h.repo.GetRunSteps(ctx, runID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	failed := 0
+	for _, step := range steps {
+		if step.Status == "FAILED" {
+			failed++
+		}
+	}
+	if failed == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no failed steps to retry"))
+	}
+	if err := h.orchestrator.RetryPipeline(ctx, runID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&pb.RetryPipelineResponse{Ok: true, StepsRequeued: int32(failed)}), nil
 }

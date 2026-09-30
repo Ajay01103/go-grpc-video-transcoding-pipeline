@@ -3,7 +3,7 @@ package publisher
 import (
 	"testing"
 
-	"github.com/Ajay01103/go-notion/webhook/internal/repository"
+	"github.com/Ajay01103/go-mux/webhook/internal/repository"
 )
 
 func TestWebhookPayloadSignature(t *testing.T) {

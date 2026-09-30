@@ -11,11 +11,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Ajay01103/go-notion/auth/config"
-	"github.com/Ajay01103/go-notion/auth/internal/repository"
-	"github.com/Ajay01103/go-notion/auth/internal/scyllastore"
-	"github.com/Ajay01103/go-notion/auth/internal/tokencache"
-	"github.com/Ajay01103/go-notion/pkg/token"
+	"github.com/Ajay01103/go-mux/auth/config"
+	"github.com/Ajay01103/go-mux/auth/internal/repository"
+	"github.com/Ajay01103/go-mux/auth/internal/scyllastore"
+	"github.com/Ajay01103/go-mux/auth/internal/tokencache"
+	"github.com/Ajay01103/go-mux/pkg/token"
 )
 
 // AuthService holds all dependencies needed by the auth business logic.

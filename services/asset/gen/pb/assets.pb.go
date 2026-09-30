@@ -671,7 +671,7 @@ const file_assets_proto_rawDesc = "" +
 	"\n" +
 	"ListAssets\x12\x19.assets.ListAssetsRequest\x1a\x1a.assets.ListAssetsResponse\x12R\n" +
 	"\x0fCreateUploadURL\x12\x1e.assets.CreateUploadURLRequest\x1a\x1f.assets.CreateUploadURLResponse\x12O\n" +
-	"\x0eCompleteUpload\x12\x1d.assets.CompleteUploadRequest\x1a\x1e.assets.CompleteUploadResponseB0Z.github.com/Ajay01103/go-notion/asset/gen/pb;pbb\x06proto3"
+	"\x0eCompleteUpload\x12\x1d.assets.CompleteUploadRequest\x1a\x1e.assets.CompleteUploadResponseB-Z+github.com/Ajay01103/go-mux/asset/gen/pb;pbb\x06proto3"
 
 var (
 	file_assets_proto_rawDescOnce sync.Once

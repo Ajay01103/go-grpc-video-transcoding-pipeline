@@ -15,6 +15,15 @@ type TranscriberClient struct {
 	client    *http.Client
 }
 
+type HTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("transcribe failed: status=%d body=%s", e.StatusCode, e.Body)
+}
+
 type TranscribeRequest struct {
 	AudioFile string `json:"audio_file"`
 	Language  string `json:"language"`
@@ -68,7 +77,7 @@ func (tc *TranscriberClient) Transcribe(ctx context.Context, audioFile, language
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("transcribe failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var result TranscribeResponse

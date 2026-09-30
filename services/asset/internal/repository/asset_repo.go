@@ -31,13 +31,18 @@ func (r *AssetRepo) ListStaleProcessingAssets(ctx context.Context, before time.T
 	}
 	var assets []Asset
 	iter := r.session.Query(
-		`SELECT asset_id, org_id, title, status, source_uri, duration_ms, error_string, created_at, updated_at FROM assets_by_id WHERE status = ? AND updated_at < ? LIMIT ? ALLOW FILTERING`,
+		`SELECT asset_id FROM assets_by_status WHERE status = ? AND updated_at < ? LIMIT ?`,
 		"PROCESSING", before, limit,
 	).WithContext(ctx).Iter()
-	var asset Asset
-	for iter.Scan(&asset.ID, &asset.OrgID, &asset.Title, &asset.Status, &asset.SourceURI, &asset.DurationMs, &asset.ErrorString, &asset.CreatedAt, &asset.UpdatedAt) {
-		assets = append(assets, asset)
-		asset = Asset{}
+	var assetID uuid.UUID
+	for iter.Scan(&assetID) {
+		asset, err := r.GetAsset(ctx, assetID)
+		if err != nil {
+			return nil, err
+		}
+		if asset != nil {
+			assets = append(assets, *asset)
+		}
 	}
 	if err := iter.Close(); err != nil {
 		return nil, fmt.Errorf("list stale processing assets: %w", err)
@@ -47,48 +52,6 @@ func (r *AssetRepo) ListStaleProcessingAssets(ctx context.Context, before time.T
 
 func NewAssetRepo(session *gocql.Session) *AssetRepo {
 	return &AssetRepo{session: session}
-}
-
-func (r *AssetRepo) EnsureSchema() error {
-	queries := []string{
-		`CREATE TABLE IF NOT EXISTS assets_by_id (
-			asset_id uuid PRIMARY KEY,
-			org_id uuid,
-			title text,
-			status text,
-			source_uri text,
-			duration_ms bigint,
-			error_string text,
-			created_at timestamp,
-			updated_at timestamp
-		)`,
-		`CREATE TABLE IF NOT EXISTS assets_by_org (
-			org_id uuid,
-			created_at timestamp,
-			asset_id uuid,
-			status text,
-			PRIMARY KEY (org_id, created_at, asset_id)
-		) WITH CLUSTERING ORDER BY (created_at DESC)`,
-		`CREATE TABLE IF NOT EXISTS playback_ids (
-			playback_id uuid PRIMARY KEY,
-			asset_id uuid,
-			policy text,
-			signing_key_id text,
-			revoked boolean,
-			created_at timestamp
-		)`,
-		`CREATE TABLE IF NOT EXISTS playback_ids_by_asset (
-			asset_id uuid,
-			playback_id uuid,
-			PRIMARY KEY (asset_id, playback_id)
-		)`,
-	}
-	for _, q := range queries {
-		if err := r.session.Query(q).WithContext(context.Background()).Exec(); err != nil {
-			return fmt.Errorf("ensure schema: %w", err)
-		}
-	}
-	return nil
 }
 
 func (r *AssetRepo) CreateAsset(ctx context.Context, orgID uuid.UUID, title string) (*Asset, error) {
@@ -113,6 +76,12 @@ func (r *AssetRepo) CreateAsset(ctx context.Context, orgID uuid.UUID, title stri
 		asset.OrgID, asset.CreatedAt, asset.ID, asset.Status,
 	).WithContext(ctx).Exec(); err != nil {
 		return nil, fmt.Errorf("insert asset_by_org: %w", err)
+	}
+	if err := r.session.Query(
+		`INSERT INTO assets_by_status (status, updated_at, asset_id) VALUES (?, ?, ?)`,
+		asset.Status, asset.UpdatedAt, asset.ID,
+	).WithContext(ctx).Exec(); err != nil {
+		return nil, fmt.Errorf("insert asset_by_status: %w", err)
 	}
 	return asset, nil
 }
@@ -176,11 +145,41 @@ func (r *AssetRepo) SetSourceURI(ctx context.Context, assetID uuid.UUID, sourceU
 
 func (r *AssetRepo) UpdateStatus(ctx context.Context, assetID uuid.UUID, status string) error {
 	now := time.Now().UTC()
+	// Read the old row so the status index can be re-keyed correctly.
+	asset, err := r.GetAsset(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	if asset == nil {
+		return fmt.Errorf("asset %s not found", assetID)
+	}
 	if err := r.session.Query(
 		`UPDATE assets_by_id SET status = ?, updated_at = ? WHERE asset_id = ?`,
 		status, now, assetID,
 	).WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("update status: %w", err)
+	}
+	// Keep indexes consistent: new status row keyed on the new timestamp,
+	// old status row tombstoned via the same (status, updated_at, asset_id) key.
+	if err := r.session.Query(
+		`INSERT INTO assets_by_status (status, updated_at, asset_id) VALUES (?, ?, ?)`,
+		status, now, assetID,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update asset_by_status: %w", err)
+	}
+	if asset.Status != status {
+		if err := r.session.Query(
+			`DELETE FROM assets_by_status WHERE status = ? AND updated_at = ? AND asset_id = ?`,
+			asset.Status, asset.UpdatedAt, assetID,
+		).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("remove stale asset_by_status row: %w", err)
+		}
+	}
+	if err := r.session.Query(
+		`UPDATE assets_by_org SET status = ? WHERE org_id = ? AND created_at = ? AND asset_id = ?`,
+		status, asset.OrgID, asset.CreatedAt, assetID,
+	).WithContext(ctx).Exec(); err != nil {
+		return fmt.Errorf("update asset_by_org status: %w", err)
 	}
 	return nil
 }

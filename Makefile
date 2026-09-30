@@ -13,9 +13,9 @@ WEBHOOK_SVC    := services/webhook
 AUTH_PB_OUT    := $(AUTH_SVC)/gen/pb
 ASSET_PB_OUT   := $(ASSET_SVC)/gen/pb
 PLAYBACK_PB_OUT := $(PLAYBACK_SVC)/gen/pb
-PROTO_MODULES  := auth assets playback pipeline
+PROTO_MODULES  := auth assets playback pipeline job webhook
 
-.PHONY: help proto build build-auth build-asset build-playback build-job build-probe build-transcode build-thumbnail build-storyboard build-subtitle build-webhook run-auth run-asset run-playback run-job run-probe run-transcode run-thumbnail run-storyboard run-subtitle run-webhook tidy scylla-up rustfs-up rustfs-shell rustfs-logs dev-start docker-up docker-down docker-logs
+.PHONY: help proto build build-auth build-asset build-playback build-job build-probe build-transcode build-thumbnail build-storyboard build-subtitle build-webhook run-auth run-asset run-playback run-job run-probe run-transcode run-thumbnail run-storyboard run-subtitle run-webhook run-order tidy scylla-up rustfs-up rustfs-shell rustfs-logs dev-start docker-up docker-down docker-logs
 
 help: ## Show the available project commands
 	@echo "Available targets:"
@@ -32,7 +32,7 @@ help: ## Show the available project commands
 	@echo "  build-subtitle   - Build the subtitle service binary"
 	@echo "  build-webhook    - Build the webhook service binary"
 	@echo "  run-auth         - Start the auth service"
-	@echo "  run-asset        - Start the asset service when cmd/main.go exists"
+	@echo "  run-asset        - Start the asset service"
 	@echo "  run-playback     - Start the playback service"
 	@echo "  run-job          - Start the pipeline job service"
 	@echo "  run-probe        - Start the probe worker"
@@ -41,6 +41,7 @@ help: ## Show the available project commands
 	@echo "  run-storyboard   - Start the storyboard worker"
 	@echo "  run-subtitle     - Start the subtitle service"
 	@echo "  run-webhook      - Start the webhook service"
+	@echo "  run-workers      - Start all four pipeline workers in separate windows"
 	@echo "  tidy             - Tidy Go modules for the workspace"
 	@echo "  scylla-up        - Start the local ScyllaDB container"
 	@echo "  rustfs-up        - Start the local RustFS S3 container and init the uploads bucket"
@@ -53,10 +54,18 @@ help: ## Show the available project commands
 # ─── Code generation ───────────────────────────────────────────────────────────
 
 proto: ## Generate Go/Connect stubs from the workspace proto modules
-	buf generate --template $(PROTO_DIR)/auth/buf.gen.yaml --path $(PROTO_DIR)/auth
-	buf generate --template $(PROTO_DIR)/assets/buf.gen.yaml --path $(PROTO_DIR)/assets
-	buf generate --template $(PROTO_DIR)/playback/buf.gen.yaml --path $(PROTO_DIR)/playback
-	buf generate --template $(PROTO_DIR)/pipeline/buf.gen.yaml --path $(PROTO_DIR)/pipeline
+	cd $(PROTO_DIR)/auth && npx @bufbuild/buf generate
+	@echo "✓ Auth proto generated"
+	cd $(PROTO_DIR)/assets && npx @bufbuild/buf generate
+	@echo "✓ Assets proto generated"
+	cd $(PROTO_DIR)/playback && npx @bufbuild/buf generate
+	@echo "✓ Playback proto generated"
+	cd $(PROTO_DIR)/pipeline && npx @bufbuild/buf generate
+	@echo "✓ Pipeline proto generated"
+	cd $(PROTO_DIR)/job && npx @bufbuild/buf generate
+	@echo "✓ Job proto generated"
+	cd $(PROTO_DIR)/webhook && npx @bufbuild/buf generate
+	@echo "✓ Webhook proto generated"
 	@echo "✓ Proto generation complete"
 
 # ─── Build & run ───────────────────────────────────────────────────────────────
@@ -147,7 +156,6 @@ rustfs-up: ## Start the local RustFS S3 container and initialize the uploads buc
 	@echo "✓ RustFS started"
 	@echo "  S3 API: http://localhost:9000"
 	@echo "  Console: http://localhost:9001"
-	@echo "  Credentials: rustfsadmin / rustfsadmin"
 
 rustfs-shell: ## Open a shell inside the RustFS container
 	docker exec -it rustfs-dev /bin/sh
@@ -159,6 +167,25 @@ dev-start: scylla-up ## Start the auth service with ScyllaDB locally
 	@echo "Waiting for ScyllaDB readiness..."
 	@sleep 5
 	$(MAKE) run-auth
+
+run-workers: ## Start all four pipeline workers in separate windows
+	start "mux-probe" cmd /c "cd /d $(PROBE_SVC:\=/) && go run ./cmd/"
+	start "mux-transcode" cmd /c "cd /d $(TRANSCODE_SVC:\=/) && go run ./cmd/"
+	start "mux-thumbnail" cmd /c "cd /d $(THUMBNAIL_SVC:\=/) && go run ./cmd/"
+	start "mux-storyboard" cmd /c "cd /d $(STORYBOARD_SVC:\=/) && go run ./cmd/"
+	@echo "✓ Workers launched: probe, transcode, thumbnail, storyboard (watch each window)"
+
+run-order: ## Print the recommended startup order for the video pipeline
+	@echo "Start infrastructure first (ScyllaDB + NATS + RustFS), then services in this order:"
+	@echo "  1. make run-auth        (50051)  JWKS + sessions"
+	@echo "  2. make run-asset       (50060)  asset CRUD + upload URLs"
+	@echo "  3. make run-playback    (50070)  playback IDs + signed tokens"
+	@echo "  4. make run-job         (50080)  pipeline orchestrator (needs NATS)"
+	@echo "  5. make run-subtitle    (50090)  transcription (best-effort step)"
+	@echo "  6. make run-webhook     (50100)  signed webhook delivery"
+	@echo "  7. make run-probe && make run-transcode && make run-thumbnail && make run-storyboard"
+	@echo "     (workers: NATS pull consumers, no ports; start transcode last)"
+	@echo "All services wait for ScyllaDB readiness and apply their own migrations on boot."
 
 # ─── Docker helpers ─────────────────────────────────────────────────────────────
 

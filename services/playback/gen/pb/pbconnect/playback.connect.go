@@ -8,7 +8,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	pb "github.com/Ajay01103/go-notion/playback/gen/pb"
+	pb "github.com/Ajay01103/go-mux/playback/gen/pb"
 	http "net/http"
 	strings "strings"
 )
@@ -45,6 +45,9 @@ const (
 	// PlaybackServiceIssueTokenProcedure is the fully-qualified name of the PlaybackService's
 	// IssueToken RPC.
 	PlaybackServiceIssueTokenProcedure = "/playback.PlaybackService/IssueToken"
+	// PlaybackServiceGetPlayerConfigProcedure is the fully-qualified name of the PlaybackService's
+	// GetPlayerConfig RPC.
+	PlaybackServiceGetPlayerConfigProcedure = "/playback.PlaybackService/GetPlayerConfig"
 )
 
 // PlaybackServiceClient is a client for the playback.PlaybackService service.
@@ -53,6 +56,7 @@ type PlaybackServiceClient interface {
 	ResolvePlayback(context.Context, *connect.Request[pb.ResolvePlaybackRequest]) (*connect.Response[pb.ResolvePlaybackResponse], error)
 	RevokePlayback(context.Context, *connect.Request[pb.RevokePlaybackRequest]) (*connect.Response[pb.RevokePlaybackResponse], error)
 	IssueToken(context.Context, *connect.Request[pb.IssueTokenRequest]) (*connect.Response[pb.IssueTokenResponse], error)
+	GetPlayerConfig(context.Context, *connect.Request[pb.GetPlayerConfigRequest]) (*connect.Response[pb.GetPlayerConfigResponse], error)
 }
 
 // NewPlaybackServiceClient constructs a client for the playback.PlaybackService service. By
@@ -90,6 +94,12 @@ func NewPlaybackServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(playbackServiceMethods.ByName("IssueToken")),
 			connect.WithClientOptions(opts...),
 		),
+		getPlayerConfig: connect.NewClient[pb.GetPlayerConfigRequest, pb.GetPlayerConfigResponse](
+			httpClient,
+			baseURL+PlaybackServiceGetPlayerConfigProcedure,
+			connect.WithSchema(playbackServiceMethods.ByName("GetPlayerConfig")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -99,6 +109,7 @@ type playbackServiceClient struct {
 	resolvePlayback *connect.Client[pb.ResolvePlaybackRequest, pb.ResolvePlaybackResponse]
 	revokePlayback  *connect.Client[pb.RevokePlaybackRequest, pb.RevokePlaybackResponse]
 	issueToken      *connect.Client[pb.IssueTokenRequest, pb.IssueTokenResponse]
+	getPlayerConfig *connect.Client[pb.GetPlayerConfigRequest, pb.GetPlayerConfigResponse]
 }
 
 // CreatePlayback calls playback.PlaybackService.CreatePlayback.
@@ -121,12 +132,18 @@ func (c *playbackServiceClient) IssueToken(ctx context.Context, req *connect.Req
 	return c.issueToken.CallUnary(ctx, req)
 }
 
+// GetPlayerConfig calls playback.PlaybackService.GetPlayerConfig.
+func (c *playbackServiceClient) GetPlayerConfig(ctx context.Context, req *connect.Request[pb.GetPlayerConfigRequest]) (*connect.Response[pb.GetPlayerConfigResponse], error) {
+	return c.getPlayerConfig.CallUnary(ctx, req)
+}
+
 // PlaybackServiceHandler is an implementation of the playback.PlaybackService service.
 type PlaybackServiceHandler interface {
 	CreatePlayback(context.Context, *connect.Request[pb.CreatePlaybackRequest]) (*connect.Response[pb.CreatePlaybackResponse], error)
 	ResolvePlayback(context.Context, *connect.Request[pb.ResolvePlaybackRequest]) (*connect.Response[pb.ResolvePlaybackResponse], error)
 	RevokePlayback(context.Context, *connect.Request[pb.RevokePlaybackRequest]) (*connect.Response[pb.RevokePlaybackResponse], error)
 	IssueToken(context.Context, *connect.Request[pb.IssueTokenRequest]) (*connect.Response[pb.IssueTokenResponse], error)
+	GetPlayerConfig(context.Context, *connect.Request[pb.GetPlayerConfigRequest]) (*connect.Response[pb.GetPlayerConfigResponse], error)
 }
 
 // NewPlaybackServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -160,6 +177,12 @@ func NewPlaybackServiceHandler(svc PlaybackServiceHandler, opts ...connect.Handl
 		connect.WithSchema(playbackServiceMethods.ByName("IssueToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	playbackServiceGetPlayerConfigHandler := connect.NewUnaryHandler(
+		PlaybackServiceGetPlayerConfigProcedure,
+		svc.GetPlayerConfig,
+		connect.WithSchema(playbackServiceMethods.ByName("GetPlayerConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/playback.PlaybackService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PlaybackServiceCreatePlaybackProcedure:
@@ -170,6 +193,8 @@ func NewPlaybackServiceHandler(svc PlaybackServiceHandler, opts ...connect.Handl
 			playbackServiceRevokePlaybackHandler.ServeHTTP(w, r)
 		case PlaybackServiceIssueTokenProcedure:
 			playbackServiceIssueTokenHandler.ServeHTTP(w, r)
+		case PlaybackServiceGetPlayerConfigProcedure:
+			playbackServiceGetPlayerConfigHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -193,4 +218,8 @@ func (UnimplementedPlaybackServiceHandler) RevokePlayback(context.Context, *conn
 
 func (UnimplementedPlaybackServiceHandler) IssueToken(context.Context, *connect.Request[pb.IssueTokenRequest]) (*connect.Response[pb.IssueTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("playback.PlaybackService.IssueToken is not implemented"))
+}
+
+func (UnimplementedPlaybackServiceHandler) GetPlayerConfig(context.Context, *connect.Request[pb.GetPlayerConfigRequest]) (*connect.Response[pb.GetPlayerConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("playback.PlaybackService.GetPlayerConfig is not implemented"))
 }

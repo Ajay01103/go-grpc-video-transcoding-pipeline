@@ -10,13 +10,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ajay01103/go-notion/pkg/events"
-	"github.com/Ajay01103/go-notion/pkg/pipelinepb"
-	"github.com/Ajay01103/go-notion/webhook/config"
-	"github.com/Ajay01103/go-notion/webhook/db"
-	"github.com/Ajay01103/go-notion/webhook/internal/publisher"
-	"github.com/Ajay01103/go-notion/webhook/internal/repository"
+	"connectrpc.com/connect"
+	"github.com/Ajay01103/go-mux/pkg/events"
+	"github.com/Ajay01103/go-mux/pkg/interceptor"
+	pkglogger "github.com/Ajay01103/go-mux/pkg/logger"
+	"github.com/Ajay01103/go-mux/pkg/pipelinepb"
+	"github.com/Ajay01103/go-mux/webhook/config"
+	"github.com/Ajay01103/go-mux/webhook/db"
+	"github.com/Ajay01103/go-mux/webhook/gen/pb"
+	webhookconnect "github.com/Ajay01103/go-mux/webhook/gen/pb/pbconnect"
+	"github.com/Ajay01103/go-mux/webhook/internal/publisher"
+	"github.com/Ajay01103/go-mux/webhook/internal/repository"
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -30,8 +36,13 @@ func main() {
 }
 
 func run() error {
-	logger, _ := zap.NewProduction()
+	logger := pkglogger.New()
 	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
+	logger.Info("WEBHOOK SERVICE starting")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -44,7 +55,6 @@ func run() error {
 		Port:              cfg.ScyllaPort,
 		Username:          cfg.ScyllaUsername,
 		Password:          cfg.ScyllaPassword,
-		Consistency:       0,
 		Datacenter:        cfg.ScyllaDatacenter,
 		ReplicationFactor: cfg.ReplicationFactor,
 	})
@@ -55,9 +65,12 @@ func run() error {
 	defer session.Close()
 
 	repo := repository.NewWebhookRepo(session)
-	if err := repo.EnsureSchema(); err != nil {
-		return fmt.Errorf("ensure schema: %w", err)
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := db.Migrate(migrateCtx, session); err != nil {
+		migrateCancel()
+		return fmt.Errorf("run migrations: %w", err)
 	}
+	migrateCancel()
 
 	js, nc, err := events.Connect(context.Background(), cfg.NATSURL)
 	if err != nil {
@@ -80,6 +93,11 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// v2: ConnectRPC/gRPC surface for subscription and delivery management.
+	webhookHandler := &webhookRPCHandler{repo: repo}
+	rpcPath, rpcHandler := webhookconnect.NewWebhookServiceHandler(webhookHandler, connect.WithInterceptors(interceptor.NewLoggingInterceptor(logger)))
+	mux.Handle(rpcPath, rpcHandler)
 
 	mux.HandleFunc("/webhook/subscribe", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -150,7 +168,7 @@ func run() error {
 	go consumeTerminalEvents(consumerCtx, js, webhookPublisher)
 	go consumeDeliveryAttempts(consumerCtx, js, webhookPublisher)
 	go func() {
-		logger.Info("webhook service started", zap.String("addr", addr))
+		logger.Info("WEBHOOK SERVICE started at ConnectRPC server", zap.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("listen and serve", zap.Error(err))
 			os.Exit(1)
@@ -197,7 +215,11 @@ func consumeTerminalEvents(ctx context.Context, js jetstream.JetStream, webhookP
 				_ = message.Term()
 				continue
 			}
-			if err := webhookPublisher.IngestPipelineEvent(ctx, orgUUID, eventType, event); err != nil {
+			eventID := ""
+			if message.Headers() != nil {
+				eventID = message.Headers().Get(nats.MsgIdHdr)
+			}
+			if err := webhookPublisher.IngestPipelineEvent(ctx, orgUUID, eventType, event, eventID); err != nil {
 				_ = message.Nak()
 				continue
 			}
@@ -227,15 +249,104 @@ func consumeDeliveryAttempts(ctx context.Context, js jetstream.JetStream, webhoo
 					_ = message.Term()
 					continue
 				}
+				// Durable retry: requeue onto JetStream with a deterministic
+				// Nats-Msg-Id. The delay itself is bounded by consumer BackOff,
+				// and the retry survives a crash because it is a stream message.
 				attempt.Attempt++
 				payload, marshalErr := json.Marshal(attempt)
 				if marshalErr == nil {
-					_ = events.NewPublisher(js).PublishBytes(ctx, events.SubjectWebhookDeliveryRetry, fmt.Sprintf("delivery:%s:retry:%d", attempt.DeliveryID, attempt.Attempt), payload)
+					if publishErr := events.NewPublisher(js).PublishBytes(ctx, events.SubjectWebhookDeliveryRetry, fmt.Sprintf("delivery:%s:retry:%d", attempt.DeliveryID, attempt.Attempt), payload); publishErr != nil {
+						_ = message.Nak()
+						continue
+					}
 				}
 				_ = message.Ack()
 				continue
 			}
 			_ = message.Ack()
 		}
+	}
+}
+
+type webhookRPCHandler struct {
+	webhookconnect.UnimplementedWebhookServiceHandler
+	repo *repository.WebhookRepo
+}
+
+func (h *webhookRPCHandler) CreateSubscription(ctx context.Context, req *connect.Request[pb.CreateSubscriptionRequest]) (*connect.Response[pb.CreateSubscriptionResponse], error) {
+	orgID, err := uuid.Parse(req.Msg.GetOrgId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if req.Msg.GetUrl() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("url is required"))
+	}
+	ep, err := h.repo.CreateEndpoint(ctx, orgID, req.Msg.GetUrl(), req.Msg.GetSecret(), req.Msg.GetEvents())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&pb.CreateSubscriptionResponse{Endpoint: toProtoEndpoint(ep)}), nil
+}
+
+func (h *webhookRPCHandler) DeleteSubscription(ctx context.Context, req *connect.Request[pb.DeleteSubscriptionRequest]) (*connect.Response[pb.DeleteSubscriptionResponse], error) {
+	orgID, err := uuid.Parse(req.Msg.GetOrgId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	endpointID, err := uuid.Parse(req.Msg.GetEndpointId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := h.repo.DeleteEndpoint(ctx, orgID, endpointID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&pb.DeleteSubscriptionResponse{Ok: true}), nil
+}
+
+func (h *webhookRPCHandler) ListSubscriptions(ctx context.Context, req *connect.Request[pb.ListSubscriptionsRequest]) (*connect.Response[pb.ListSubscriptionsResponse], error) {
+	orgID, err := uuid.Parse(req.Msg.GetOrgId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	endpoints, err := h.repo.GetEndpoints(ctx, orgID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	response := &pb.ListSubscriptionsResponse{Endpoints: make([]*pb.WebhookEndpoint, 0, len(endpoints))}
+	for i := range endpoints {
+		response.Endpoints = append(response.Endpoints, toProtoEndpoint(&endpoints[i]))
+	}
+	return connect.NewResponse(response), nil
+}
+
+func (h *webhookRPCHandler) GetDeliveryStatus(ctx context.Context, req *connect.Request[pb.GetDeliveryStatusRequest]) (*connect.Response[pb.GetDeliveryStatusResponse], error) {
+	deliveryID, err := uuid.Parse(req.Msg.GetDeliveryId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	delivery, err := h.repo.GetDeliveryByID(ctx, deliveryID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if delivery == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("delivery not found"))
+	}
+	return connect.NewResponse(&pb.GetDeliveryStatusResponse{Delivery: &pb.DeliveryStatus{
+		DeliveryId:  delivery.DeliveryID.String(),
+		EndpointId:  delivery.EndpointID.String(),
+		EventType:   delivery.EventType,
+		StatusCode:  int32(delivery.StatusCode),
+		Attempt:     int32(delivery.Attempt),
+		DeliveredAt: delivery.DeliveredAt.Format(time.RFC3339Nano),
+	}}), nil
+}
+
+func toProtoEndpoint(ep *repository.WebhookEndpoint) *pb.WebhookEndpoint {
+	return &pb.WebhookEndpoint{
+		OrgId:      ep.OrgID.String(),
+		EndpointId: ep.EndpointID.String(),
+		Url:        ep.URL,
+		Events:     ep.Events,
+		CreatedAt:  ep.CreatedAt.Format(time.RFC3339Nano),
 	}
 }

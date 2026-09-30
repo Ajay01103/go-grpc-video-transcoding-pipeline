@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Ajay01103/go-notion/pkg/events"
-	"github.com/Ajay01103/go-notion/webhook/internal/repository"
+	"github.com/Ajay01103/go-mux/pkg/events"
+	"github.com/Ajay01103/go-mux/webhook/internal/repository"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -45,9 +45,18 @@ type DeliveryAttempt struct {
 	Attempt    int    `json:"attempt"`
 }
 
-func (wp *WebhookPublisher) IngestPipelineEvent(ctx context.Context, orgID uuid.UUID, eventType string, message proto.Message) error {
+func (wp *WebhookPublisher) IngestPipelineEvent(ctx context.Context, orgID uuid.UUID, eventType string, message proto.Message, eventID string) error {
 	if wp.events == nil {
 		return fmt.Errorf("event publisher is required")
+	}
+	if eventID != "" {
+		applied, err := wp.repo.RecordEventDeduplicated(ctx, orgID, eventID)
+		if err != nil {
+			return err
+		}
+		if !applied {
+			return nil // already processed
+		}
 	}
 	payload, err := protojson.Marshal(message)
 	if err != nil {

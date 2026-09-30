@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package pipeline;
 
-option go_package = "github.com/Ajay01103/go-notion/pkg/pipelinepb;pipelinepb";
+option go_package = "github.com/Ajay01103/go-mux/pkg/pipelinepb;pipelinepb";
 
 message AssetUploadCompleted {
   string asset_id = 1;
@@ -119,6 +119,7 @@ message StoryboardRequested {
   string org_id = 5;
   int32 attempt = 6;
   string idempotency_key = 7;
+  double duration_seconds = 8; // from probe result; drives VTT cue count
 }
 
 message StoryboardCompleted {

@@ -1010,16 +1010,17 @@ func (x *ThumbnailFailed) GetTimestampUnix() int64 {
 }
 
 type StoryboardRequested struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	RunId          string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	AssetId        string                 `protobuf:"bytes,2,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	SourceUri      string                 `protobuf:"bytes,3,opt,name=source_uri,json=sourceUri,proto3" json:"source_uri,omitempty"`
-	OutputPrefix   string                 `protobuf:"bytes,4,opt,name=output_prefix,json=outputPrefix,proto3" json:"output_prefix,omitempty"`
-	OrgId          string                 `protobuf:"bytes,5,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	Attempt        int32                  `protobuf:"varint,6,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	IdempotencyKey string                 `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	RunId           string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	AssetId         string                 `protobuf:"bytes,2,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
+	SourceUri       string                 `protobuf:"bytes,3,opt,name=source_uri,json=sourceUri,proto3" json:"source_uri,omitempty"`
+	OutputPrefix    string                 `protobuf:"bytes,4,opt,name=output_prefix,json=outputPrefix,proto3" json:"output_prefix,omitempty"`
+	OrgId           string                 `protobuf:"bytes,5,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	Attempt         int32                  `protobuf:"varint,6,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	IdempotencyKey  string                 `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	DurationSeconds float64                `protobuf:"fixed64,8,opt,name=duration_seconds,json=durationSeconds,proto3" json:"duration_seconds,omitempty"` // from probe result; drives VTT cue count
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StoryboardRequested) Reset() {
@@ -1099,6 +1100,13 @@ func (x *StoryboardRequested) GetIdempotencyKey() string {
 		return x.IdempotencyKey
 	}
 	return ""
+}
+
+func (x *StoryboardRequested) GetDurationSeconds() float64 {
+	if x != nil {
+		return x.DurationSeconds
+	}
+	return 0
 }
 
 type StoryboardCompleted struct {
@@ -1844,7 +1852,7 @@ const file_pipeline_proto_rawDesc = "" +
 	"error_code\x18\x04 \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\x12\x18\n" +
 	"\aattempt\x18\x06 \x01(\x05R\aattempt\x12%\n" +
-	"\x0etimestamp_unix\x18\a \x01(\x03R\rtimestampUnix\"\xe5\x01\n" +
+	"\x0etimestamp_unix\x18\a \x01(\x03R\rtimestampUnix\"\x90\x02\n" +
 	"\x13StoryboardRequested\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\basset_id\x18\x02 \x01(\tR\aassetId\x12\x1d\n" +
@@ -1853,7 +1861,8 @@ const file_pipeline_proto_rawDesc = "" +
 	"\routput_prefix\x18\x04 \x01(\tR\foutputPrefix\x12\x15\n" +
 	"\x06org_id\x18\x05 \x01(\tR\x05orgId\x12\x18\n" +
 	"\aattempt\x18\x06 \x01(\x05R\aattempt\x12'\n" +
-	"\x0fidempotency_key\x18\a \x01(\tR\x0eidempotencyKey\"\xeb\x01\n" +
+	"\x0fidempotency_key\x18\a \x01(\tR\x0eidempotencyKey\x12)\n" +
+	"\x10duration_seconds\x18\b \x01(\x01R\x0fdurationSeconds\"\xeb\x01\n" +
 	"\x13StoryboardCompleted\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\basset_id\x18\x02 \x01(\tR\aassetId\x12\x15\n" +
@@ -1917,7 +1926,7 @@ const file_pipeline_proto_rawDesc = "" +
 	"\n" +
 	"error_code\x18\x04 \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\x12%\n" +
-	"\x0etimestamp_unix\x18\x06 \x01(\x03R\rtimestampUnixB:Z8github.com/Ajay01103/go-notion/pkg/pipelinepb;pipelinepbb\x06proto3"
+	"\x0etimestamp_unix\x18\x06 \x01(\x03R\rtimestampUnixB7Z5github.com/Ajay01103/go-mux/pkg/pipelinepb;pipelinepbb\x06proto3"
 
 var (
 	file_pipeline_proto_rawDescOnce sync.Once

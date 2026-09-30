@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/Ajay01103/go-notion/playback/config"
-	"github.com/Ajay01103/go-notion/playback/db"
-	"github.com/Ajay01103/go-notion/playback/gen/pb"
-	"github.com/Ajay01103/go-notion/playback/gen/pb/pbconnect"
-	"github.com/Ajay01103/go-notion/playback/internal/repository"
-	"github.com/Ajay01103/go-notion/playback/internal/service"
+	"github.com/Ajay01103/go-mux/pkg/interceptor"
+	pkglogger "github.com/Ajay01103/go-mux/pkg/logger"
+	"github.com/Ajay01103/go-mux/playback/config"
+	"github.com/Ajay01103/go-mux/playback/db"
+	"github.com/Ajay01103/go-mux/playback/gen/pb"
+	"github.com/Ajay01103/go-mux/playback/gen/pb/pbconnect"
+	"github.com/Ajay01103/go-mux/playback/internal/repository"
+	service "github.com/Ajay01103/go-mux/playback/internal/service"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -33,11 +35,11 @@ func (h *playbackHandler) CreatePlayback(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	record, err := h.service.CreatePlayback(ctx, assetID, req.Msg.GetPolicy())
+	record, err := h.service.CreatePlayback(ctx, assetID, req.Msg.GetPolicy(), req.Msg.GetArtifactPrefix())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&pb.CreatePlaybackResponse{Playback: &pb.PlaybackRecord{PlaybackId: record.PlaybackID.String(), AssetId: record.AssetID.String(), Policy: record.Policy, SigningKeyId: record.SigningKeyID, Revoked: record.Revoked, CreatedAt: record.CreatedAt.Format(time.RFC3339Nano)}}), nil
+	return connect.NewResponse(&pb.CreatePlaybackResponse{Playback: &pb.PlaybackRecord{PlaybackId: record.PlaybackID.String(), AssetId: record.AssetID.String(), Policy: record.Policy, ArtifactPrefix: record.ArtifactPrefix, SigningKeyId: record.SigningKeyID, Revoked: record.Revoked, CreatedAt: record.CreatedAt.Format(time.RFC3339Nano)}}), nil
 }
 
 func (h *playbackHandler) ResolvePlayback(ctx context.Context, req *connect.Request[pb.ResolvePlaybackRequest]) (*connect.Response[pb.ResolvePlaybackResponse], error) {
@@ -78,6 +80,32 @@ func (h *playbackHandler) IssueToken(ctx context.Context, req *connect.Request[p
 	return connect.NewResponse(&pb.IssueTokenResponse{Token: token}), nil
 }
 
+func (h *playbackHandler) GetPlayerConfig(ctx context.Context, req *connect.Request[pb.GetPlayerConfigRequest]) (*connect.Response[pb.GetPlayerConfigResponse], error) {
+	playbackID, err := uuid.Parse(req.Msg.GetPlaybackId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	config, err := h.service.GetPlayerConfig(ctx, playbackID, req.Msg.GetCdnUrl(), req.Msg.GetLanguages())
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "revoked") {
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	subtitles := make([]*pb.PlayerSubtitleTrack, 0, len(config.Subtitles))
+	for _, track := range config.Subtitles {
+		subtitles = append(subtitles, &pb.PlayerSubtitleTrack{Url: track.URL, Lang: track.Lang, Label: track.Label, Auto: track.Auto})
+	}
+	return connect.NewResponse(&pb.GetPlayerConfigResponse{
+		Src:           config.Src,
+		Poster:        config.Poster,
+		StoryboardSrc: config.StoryboardSrc,
+		Subtitles:     subtitles,
+		AssetId:       config.AssetID,
+		PlaybackId:    config.PlaybackID,
+	}), nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "playback service exited: %v\n", err)
@@ -86,8 +114,13 @@ func main() {
 }
 
 func run() error {
-	logger, _ := zap.NewProduction()
+	logger := pkglogger.New()
 	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
+	logger.Info("PLAYBACK SERVICE starting")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -100,7 +133,6 @@ func run() error {
 		Port:              cfg.ScyllaPort,
 		Username:          cfg.ScyllaUsername,
 		Password:          cfg.ScyllaPassword,
-		Consistency:       0,
 		Datacenter:        cfg.ScyllaDatacenter,
 		ReplicationFactor: cfg.ReplicationFactor,
 	})
@@ -110,14 +142,24 @@ func run() error {
 	}
 	defer session.Close()
 
+	ctxMigrate, cancelMigrate := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := db.Migrate(ctxMigrate, session); err != nil {
+		cancelMigrate()
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	cancelMigrate()
+
 	repo := repository.NewPlaybackRepo(session)
-	if err := repo.EnsureSchema(); err != nil {
-		return fmt.Errorf("ensure schema: %w", err)
+	ctxSigner, cancelSigner := context.WithTimeout(context.Background(), 30*time.Second)
+	playbackSigner, err := service.NewTokenSigner(ctxSigner, session)
+	cancelSigner()
+	if err != nil {
+		return fmt.Errorf("create playback token signer: %w", err)
 	}
 
-	playbackSvc := service.NewPlaybackService(repo, time.Duration(cfg.TokenTTL)*time.Second)
+	playbackSvc := service.NewPlaybackService(repo, playbackSigner, time.Duration(cfg.TokenTTL)*time.Second)
 	mux := http.NewServeMux()
-	path, rpcHandler := pbconnect.NewPlaybackServiceHandler(&playbackHandler{service: playbackSvc})
+	path, rpcHandler := pbconnect.NewPlaybackServiceHandler(&playbackHandler{service: playbackSvc}, connect.WithInterceptors(interceptor.NewLoggingInterceptor(logger)))
 	mux.Handle(path, rpcHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -134,12 +176,24 @@ func run() error {
 			http.Error(w, "invalid asset_id", http.StatusBadRequest)
 			return
 		}
-		rec, err := playbackSvc.CreatePlayback(r.Context(), assetID, "signed")
+		rec, err := playbackSvc.CreatePlayback(r.Context(), assetID, "signed", r.URL.Query().Get("artifact_prefix"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(rec)
+	})
+
+	// JWKS endpoint so the CDN edge can verify playback tokens locally.
+	mux.HandleFunc("/playback/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		jwks, err := playbackSigner.PublicKeyJWKs(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		_, _ = w.Write(jwks)
 	})
 	mux.HandleFunc("/playback/token", func(w http.ResponseWriter, r *http.Request) {
 		playbackIDStr := r.URL.Query().Get("playback_id")
@@ -178,10 +232,8 @@ func run() error {
 			http.Error(w, "invalid playback_id", http.StatusBadRequest)
 			return
 		}
+		// Empty cdn_url = direct public RustFS URLs (default dev mode).
 		cdnURL := r.URL.Query().Get("cdn_url")
-		if cdnURL == "" {
-			cdnURL = "https://cdn.you.com"
-		}
 
 		langs := []string{}
 		if rawLangs := r.URL.Query().Get("languages"); rawLangs != "" {
@@ -207,7 +259,7 @@ func run() error {
 	addr := fmt.Sprintf(":%s", cfg.HTTPPort)
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
-		logger.Info("playback service started", zap.String("addr", addr))
+		logger.Info("PLAYBACK SERVICE started at ConnectRPC server", zap.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("listen and serve", zap.Error(err))
 			os.Exit(1)

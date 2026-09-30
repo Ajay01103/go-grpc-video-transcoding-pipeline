@@ -7,8 +7,8 @@ import (
 	"github.com/dgraph-io/ristretto"
 	"go.uber.org/zap"
 
-	"github.com/Ajay01103/go-notion/auth/internal/scyllastore"
-	"github.com/Ajay01103/go-notion/auth/internal/tokencache"
+	"github.com/Ajay01103/go-mux/auth/internal/scyllastore"
+	"github.com/Ajay01103/go-mux/auth/internal/tokencache"
 	"github.com/google/uuid"
 )
 

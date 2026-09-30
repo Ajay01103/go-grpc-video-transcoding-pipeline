@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"testing"
 
-	"github.com/Ajay01103/go-notion/pkg/events"
+	"github.com/Ajay01103/go-mux/pkg/events"
 	"github.com/google/uuid"
 )
 

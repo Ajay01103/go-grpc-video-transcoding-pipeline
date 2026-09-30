@@ -9,20 +9,36 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/Ajay01103/go-notion/pkg/events"
-	"github.com/Ajay01103/go-notion/pkg/pipelinepb"
-	"github.com/Ajay01103/go-notion/subtitle/config"
-	"github.com/Ajay01103/go-notion/subtitle/db"
-	"github.com/Ajay01103/go-notion/subtitle/internal/repository"
-	"github.com/Ajay01103/go-notion/subtitle/internal/transcriber"
+	"github.com/Ajay01103/go-mux/pkg/events"
+	pkglogger "github.com/Ajay01103/go-mux/pkg/logger"
+	"github.com/Ajay01103/go-mux/pkg/pipelinepb"
+	"github.com/Ajay01103/go-mux/pkg/storage"
+	"github.com/Ajay01103/go-mux/subtitle/config"
+	"github.com/Ajay01103/go-mux/subtitle/db"
+	"github.com/Ajay01103/go-mux/subtitle/internal/repository"
+	"github.com/Ajay01103/go-mux/subtitle/internal/transcriber"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
+
+var errPermanent = errors.New("permanent error")
+
+func classifyWhisperError(err error) error {
+	var httpErr *transcriber.HTTPError
+	if errors.As(err, &httpErr) {
+		// HTTP 4xx (except 408 Request Timeout, 429 Too Many Requests) from Whisper is permanent.
+		if httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != 408 && httpErr.StatusCode != 429 {
+			return fmt.Errorf("%w: %w", errPermanent, err)
+		}
+	}
+	return err
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -32,8 +48,13 @@ func main() {
 }
 
 func run() error {
-	logger, _ := zap.NewProduction()
+	logger := pkglogger.New()
 	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
+	logger.Info("SUBTITLE SERVICE starting")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -46,7 +67,6 @@ func run() error {
 		Port:              cfg.ScyllaPort,
 		Username:          cfg.ScyllaUsername,
 		Password:          cfg.ScyllaPassword,
-		Consistency:       0,
 		Datacenter:        cfg.ScyllaDatacenter,
 		ReplicationFactor: cfg.ReplicationFactor,
 	})
@@ -57,11 +77,14 @@ func run() error {
 	defer session.Close()
 
 	repo := repository.NewSubtitleRepo(session)
-	if err := repo.EnsureSchema(); err != nil {
-		return fmt.Errorf("ensure schema: %w", err)
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := db.Migrate(migrateCtx, session); err != nil {
+		migrateCancel()
+		return fmt.Errorf("run migrations: %w", err)
 	}
+	migrateCancel()
 
-	transcriber := transcriber.NewTranscriberClient(cfg.WhisperServerURL)
+	transcriberClient := transcriber.NewTranscriberClient(cfg.WhisperServerURL)
 	js, nc, err := events.Connect(context.Background(), cfg.NATSURL)
 	if err != nil {
 		return fmt.Errorf("connect to nats: %w", err)
@@ -78,6 +101,8 @@ func run() error {
 		return fmt.Errorf("get subtitle consumer: %w", err)
 	}
 	publisher := events.NewPublisher(js)
+	storageConfig := storage.ConfigFromEnv()
+	store := storage.New(storageConfig)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +143,7 @@ func run() error {
 			return
 		}
 
-		result, err := transcriber.Transcribe(r.Context(), reqBody.AudioFile, reqBody.Language)
+		result, err := transcriberClient.Transcribe(r.Context(), reqBody.AudioFile, reqBody.Language)
 		if err != nil {
 			if updateErr := repo.SetSubtitleStatus(r.Context(), assetID, reqBody.Language, "failed"); updateErr != nil {
 				logger.Error("failed to update subtitle status", zap.Error(updateErr))
@@ -127,7 +152,7 @@ func run() error {
 			return
 		}
 
-		vttContent := transcriber.SegmentsToVTT(result.Segments)
+		vttContent := transcriberClient.SegmentsToVTT(result.Segments)
 		if err := os.MkdirAll(reqBody.OutputDir, 0755); err != nil {
 			http.Error(w, fmt.Sprintf("create output dir: %v", err), http.StatusInternalServerError)
 			return
@@ -155,9 +180,36 @@ func run() error {
 	srv := &http.Server{Addr: addr, Handler: mux}
 	consumerCtx, stopConsumer := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopConsumer()
-	go consumeSubtitleEvents(consumerCtx, subtitleConsumer, publisher, repo, transcriber)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		logger.Info("subtitle service started", zap.String("addr", addr))
+		defer wg.Done()
+		for consumerCtx.Err() == nil {
+			batch, fetchErr := subtitleConsumer.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+			if fetchErr != nil {
+				continue
+			}
+			for message := range batch.Messages() {
+				handleErr := handleSubtitleEvent(consumerCtx, publisher, logger, message, repo, transcriberClient, store, storageConfig.Bucket)
+				switch {
+				case errors.Is(handleErr, events.ErrMessageTerminated):
+					// Term() already called inside HandleFinalAttempt.
+				case handleErr != nil && consumerCtx.Err() == nil:
+					logger.Warn("subtitle attempt failed, will retry", zap.Error(handleErr))
+					_ = message.Nak()
+				case handleErr != nil:
+					_ = message.Nak()
+				default:
+					logger.Info("subtitle completed")
+					_ = message.Ack()
+				}
+			}
+		}
+	}()
+
+	go func() {
+		logger.Info("SUBTITLE SERVICE started", zap.String("addr", addr), zap.String("natsConsumer", events.ConsumerSubtitleWorkers))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("listen and serve", zap.Error(err))
 			os.Exit(1)
@@ -165,35 +217,14 @@ func run() error {
 	}()
 
 	<-consumerCtx.Done()
+	wg.Wait()
+
 	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	return srv.Shutdown(ctxShutdown)
 }
 
-func consumeSubtitleEvents(ctx context.Context, consumer jetstream.Consumer, publisher *events.Publisher, repo *repository.SubtitleRepo, client *transcriber.TranscriberClient) {
-	for ctx.Err() == nil {
-		batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
-		if err != nil {
-			continue
-		}
-		for message := range batch.Messages() {
-			handleErr := handleSubtitleEvent(ctx, message, publisher, repo, client)
-			if errors.Is(handleErr, errSubtitleTerminated) {
-				continue
-			}
-			if handleErr != nil && ctx.Err() == nil {
-				_ = message.Nak()
-			}
-			if handleErr == nil {
-				_ = message.Ack()
-			}
-		}
-	}
-}
-
-var errSubtitleTerminated = errors.New("subtitle message terminated")
-
-func handleSubtitleEvent(ctx context.Context, message jetstream.Msg, publisher *events.Publisher, repo *repository.SubtitleRepo, client *transcriber.TranscriberClient) error {
+func handleSubtitleEvent(ctx context.Context, publisher *events.Publisher, logger *zap.Logger, message events.MsgAcker, repo *repository.SubtitleRepo, client *transcriber.TranscriberClient, store *storage.Client, bucket string) error {
 	request := new(pipelinepb.SubtitleRequested)
 	if err := proto.Unmarshal(message.Data(), request); err != nil {
 		return err
@@ -205,26 +236,54 @@ func handleSubtitleEvent(ctx context.Context, message jetstream.Msg, publisher *
 	if err := repo.SetSubtitleStatus(ctx, assetID, request.GetLanguage(), "running"); err != nil {
 		return err
 	}
+
+	// Heartbeat before staging/transcribing so slow Whisper calls don't expire AckWait.
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	defer hbCancel()
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = message.InProgress()
+			case <-hbCtx.Done():
+				return
+			}
+		}
+	}()
+
 	result, err := client.Transcribe(ctx, request.GetSourceUri(), request.GetLanguage())
 	if err != nil {
-		metadata, metadataErr := message.Metadata()
-		if metadataErr != nil || metadata.NumDelivered < 5 {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		_ = repo.SetSubtitleStatus(ctx, assetID, request.GetLanguage(), "failed")
-		failed := &pipelinepb.SubtitleFailed{RunId: request.GetRunId(), AssetId: request.GetAssetId(), OrgId: request.GetOrgId(), Language: request.GetLanguage(), ErrorCode: "SUBTITLE_FAILED", ErrorMessage: err.Error(), Attempt: request.GetAttempt(), TimestampUnix: time.Now().UTC().Unix()}
-		if publishErr := publisher.Publish(ctx, events.SubjectSubtitleFailed, events.TerminalMessageID(request.GetRunId(), "subtitle-failed:"+request.GetLanguage()), failed); publishErr != nil {
-			return publishErr
+		classifiedErr := classifyWhisperError(err)
+		isPermanent := errors.Is(classifiedErr, errPermanent)
+		cfg := events.WorkerFailureConfig{
+			ConsumerName: events.ConsumerSubtitleWorkers,
+			Logger:       logger,
 		}
-		if termErr := message.Term(); termErr != nil {
-			return termErr
-		}
-		return errSubtitleTerminated
+		return events.HandleFinalAttempt(ctx, message, cfg, isPermanent, func(pubCtx context.Context) error {
+			_ = repo.SetSubtitleResult(pubCtx, assetID, request.GetLanguage(), "failed", "", classifiedErr.Error())
+			failed := &pipelinepb.SubtitleFailed{
+				RunId:         request.GetRunId(),
+				AssetId:       request.GetAssetId(),
+				OrgId:         request.GetOrgId(),
+				Language:      request.GetLanguage(),
+				ErrorCode:     "SUBTITLE_FAILED",
+				ErrorMessage:  classifiedErr.Error(),
+				Attempt:       request.GetAttempt(),
+				TimestampUnix: time.Now().UTC().Unix(),
+			}
+			msgID := events.StepTerminalMessageID(request.GetRunId(), "subtitle-failed:"+request.GetLanguage(), request.GetAttempt())
+			return publisher.Publish(pubCtx, events.SubjectSubtitleFailed, msgID, failed)
+		})
 	}
 
 	outputPrefix := request.GetOutputPrefix()
 	if outputPrefix == "" {
-		return fmt.Errorf("subtitle output prefix is required")
+		return fmt.Errorf("%w: subtitle output prefix is required", errPermanent)
 	}
 	temporaryDir, err := os.MkdirTemp("", "mux-subtitle-")
 	if err != nil {
@@ -235,17 +294,23 @@ func handleSubtitleEvent(ctx context.Context, message jetstream.Msg, publisher *
 	if err := os.WriteFile(temporaryFile, []byte(client.SegmentsToVTT(result.Segments)), 0644); err != nil {
 		return err
 	}
-	finalDir := filepath.Join(outputPrefix, "subtitles")
-	if err := os.MkdirAll(finalDir, 0755); err != nil {
+	// Durable publish: VTT goes to RustFS before the completed event fires.
+	vttLocation := outputPrefix + "/subtitles/" + request.GetLanguage() + ".vtt"
+	if err := store.PutFile(ctx, bucket, vttLocation, temporaryFile); err != nil {
+		return fmt.Errorf("upload subtitle vtt: %w", err)
+	}
+	if err := repo.SetSubtitleResult(ctx, assetID, request.GetLanguage(), "done", vttLocation, ""); err != nil {
 		return err
 	}
-	finalFile := filepath.Join(finalDir, request.GetLanguage()+".vtt")
-	if err := os.Rename(temporaryFile, finalFile); err != nil {
-		return fmt.Errorf("commit subtitle output: %w", err)
+	completed := &pipelinepb.SubtitleCompleted{
+		RunId:         request.GetRunId(),
+		AssetId:       request.GetAssetId(),
+		OrgId:         request.GetOrgId(),
+		Language:      request.GetLanguage(),
+		VttLocation:   vttLocation,
+		Attempt:       request.GetAttempt(),
+		TimestampUnix: time.Now().UTC().Unix(),
 	}
-	if err := repo.SetSubtitleStatus(ctx, assetID, request.GetLanguage(), "done"); err != nil {
-		return err
-	}
-	completed := &pipelinepb.SubtitleCompleted{RunId: request.GetRunId(), AssetId: request.GetAssetId(), OrgId: request.GetOrgId(), Language: request.GetLanguage(), VttLocation: finalFile, Attempt: request.GetAttempt(), TimestampUnix: time.Now().UTC().Unix()}
-	return publisher.Publish(ctx, events.SubjectSubtitleCompleted, events.TerminalMessageID(request.GetRunId(), "subtitle-completed:"+request.GetLanguage()), completed)
+	msgID := events.StepTerminalMessageID(request.GetRunId(), "subtitle-completed:"+request.GetLanguage(), request.GetAttempt())
+	return publisher.Publish(ctx, events.SubjectSubtitleCompleted, msgID, completed)
 }

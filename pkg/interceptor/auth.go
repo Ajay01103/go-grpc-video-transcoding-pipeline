@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	"github.com/Ajay01103/go-notion/pkg/jwks"
+	"github.com/Ajay01103/go-mux/pkg/jwks"
 	"github.com/google/uuid"
 )
 

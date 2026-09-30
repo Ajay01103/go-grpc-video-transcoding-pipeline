@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package job;
+
+option go_package = "github.com/Ajay01103/go-mux/job/gen/pb;pb";
+
+message PipelineStepStatus {
+  string run_id = 1;
+  string asset_id = 2;
+  string step = 3;
+  string status = 4;
+  string updated_at = 5;
+}
+
+message PipelineRunSummary {
+  string run_id = 1;
+  string asset_id = 2;
+  string org_id = 3;
+  string status = 4;
+  string playback_id = 5;
+}
+
+message GetPipelineStatusRequest {
+  string asset_id = 1;
+  string run_id = 2; // optional; takes precedence when set
+}
+
+message GetPipelineStatusResponse {
+  PipelineRunSummary run = 1;
+  repeated PipelineStepStatus steps = 2;
+}
+
+message CancelPipelineRequest {
+  string run_id = 1;
+}
+
+message CancelPipelineResponse {
+  bool ok = 1;
+}
+
+message RetryPipelineRequest {
+  string run_id = 1;
+}
+
+message RetryPipelineResponse {
+  bool ok = 1;
+  int32 steps_requeued = 2;
+}
+
+service JobService {
+  rpc GetPipelineStatus(GetPipelineStatusRequest) returns (GetPipelineStatusResponse);
+  rpc CancelPipeline(CancelPipelineRequest) returns (CancelPipelineResponse);
+  rpc RetryPipeline(RetryPipelineRequest) returns (RetryPipelineResponse);
+}

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package assets;
 
-option go_package = "github.com/Ajay01103/go-notion/asset/gen/pb;pb";
+option go_package = "github.com/Ajay01103/go-mux/asset/gen/pb;pb";
 
 message Asset {
   string asset_id = 1;

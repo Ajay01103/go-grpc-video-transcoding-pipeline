@@ -18,17 +18,17 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/Ajay01103/go-notion/auth/config"
-	"github.com/Ajay01103/go-notion/auth/db"
-	"github.com/Ajay01103/go-notion/auth/gen/pb/pbconnect"
-	"github.com/Ajay01103/go-notion/auth/internal/repository"
-	"github.com/Ajay01103/go-notion/auth/internal/scyllastore"
-	"github.com/Ajay01103/go-notion/auth/internal/service"
-	"github.com/Ajay01103/go-notion/auth/internal/tokencache"
-	"github.com/Ajay01103/go-notion/auth/server"
-	"github.com/Ajay01103/go-notion/pkg/interceptor"
-	pkglogger "github.com/Ajay01103/go-notion/pkg/logger"
-	"github.com/Ajay01103/go-notion/pkg/token"
+	"github.com/Ajay01103/go-mux/auth/config"
+	"github.com/Ajay01103/go-mux/auth/db"
+	"github.com/Ajay01103/go-mux/auth/gen/pb/pbconnect"
+	"github.com/Ajay01103/go-mux/auth/internal/repository"
+	"github.com/Ajay01103/go-mux/auth/internal/scyllastore"
+	"github.com/Ajay01103/go-mux/auth/internal/service"
+	"github.com/Ajay01103/go-mux/auth/internal/tokencache"
+	"github.com/Ajay01103/go-mux/auth/server"
+	"github.com/Ajay01103/go-mux/pkg/interceptor"
+	pkglogger "github.com/Ajay01103/go-mux/pkg/logger"
+	"github.com/Ajay01103/go-mux/pkg/token"
 )
 
 // corsMiddleware allows Next.js or any other frontend to access Connect endpoints.
@@ -84,19 +84,15 @@ func run() error {
 	}
 	defer session.Close()
 
-	// 3. Run migrations.
-	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-	hasMigrations, err := db.Migrate(ctx, session)
-	cancel()
-	if err != nil {
+	// 3. Run migrations via the shared dbmigrate runner (same as every other service).
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := db.Migrate(migrateCtx, session); err != nil {
+		migrateCancel()
 		logger.Error("cannot run migrations", zap.Error(err))
 		return fmt.Errorf("run migrations: %w", err)
 	}
-	if hasMigrations {
-		logger.Info("database migrations applied successfully")
-	} else {
-		logger.Debug("database schema is up-to-date")
-	}
+	migrateCancel()
+	logger.Debug("database schema is up-to-date")
 
 	// 4. Setup dependencies
 	userRepo := repository.NewUserRepo(session)

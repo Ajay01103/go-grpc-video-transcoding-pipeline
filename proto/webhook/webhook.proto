@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package webhook;
+
+option go_package = "github.com/Ajay01103/go-mux/webhook/gen/pb;pb";
+
+message WebhookEndpoint {
+  string org_id = 1;
+  string endpoint_id = 2;
+  string url = 3;
+  repeated string events = 4;
+  string created_at = 5;
+}
+
+message CreateSubscriptionRequest {
+  string org_id = 1;
+  string url = 2;
+  string secret = 3;
+  repeated string events = 4;
+}
+
+message CreateSubscriptionResponse {
+  WebhookEndpoint endpoint = 1;
+}
+
+message DeleteSubscriptionRequest {
+  string org_id = 1;
+  string endpoint_id = 2;
+}
+
+message DeleteSubscriptionResponse {
+  bool ok = 1;
+}
+
+message ListSubscriptionsRequest {
+  string org_id = 1;
+}
+
+message ListSubscriptionsResponse {
+  repeated WebhookEndpoint endpoints = 1;
+}
+
+message GetDeliveryStatusRequest {
+  string delivery_id = 1;
+}
+
+message DeliveryStatus {
+  string delivery_id = 1;
+  string endpoint_id = 2;
+  string event_type = 3;
+  int32 status_code = 4;
+  int32 attempt = 5;
+  string delivered_at = 6;
+}
+
+message GetDeliveryStatusResponse {
+  DeliveryStatus delivery = 1;
+}
+
+service WebhookService {
+  rpc CreateSubscription(CreateSubscriptionRequest) returns (CreateSubscriptionResponse);
+  rpc DeleteSubscription(DeleteSubscriptionRequest) returns (DeleteSubscriptionResponse);
+  rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
+  rpc GetDeliveryStatus(GetDeliveryStatusRequest) returns (GetDeliveryStatusResponse);
+}

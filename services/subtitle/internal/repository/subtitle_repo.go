@@ -33,32 +33,18 @@ func NewSubtitleRepo(session *gocql.Session) *SubtitleRepo {
 	return &SubtitleRepo{session: session}
 }
 
-func (r *SubtitleRepo) EnsureSchema() error {
-	queries := []string{
-		`CREATE TABLE IF NOT EXISTS subtitles (
-			asset_id uuid,
-			language text,
-			status text,
-			segments text,
-			created_at timestamp,
-			updated_at timestamp,
-			PRIMARY KEY (asset_id, language)
-		)`,
-	}
-	for _, q := range queries {
-		if err := r.session.Query(q).WithContext(context.Background()).Exec(); err != nil {
-			return fmt.Errorf("ensure schema: %w", err)
-		}
-	}
-	return nil
+func (r *SubtitleRepo) SetSubtitleStatus(ctx context.Context, assetID uuid.UUID, language, status string) error {
+	return r.SetSubtitleResult(ctx, assetID, language, status, "", "")
 }
 
-func (r *SubtitleRepo) SetSubtitleStatus(ctx context.Context, assetID uuid.UUID, language, status string) error {
+// SetSubtitleResult records status plus the VTT storage location or an error
+// message in one write (matches the migration-1 schema columns).
+func (r *SubtitleRepo) SetSubtitleResult(ctx context.Context, assetID uuid.UUID, language, status, vttLocation, errorMessage string) error {
 	if err := r.session.Query(
-		`INSERT INTO subtitles (asset_id, language, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		assetID, language, status, time.Now().UTC(), time.Now().UTC(),
+		`INSERT INTO subtitles (asset_id, language, status, vtt_location, error_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		assetID, language, status, vttLocation, errorMessage, time.Now().UTC(), time.Now().UTC(),
 	).WithContext(ctx).Exec(); err != nil {
-		return fmt.Errorf("set subtitle status: %w", err)
+		return fmt.Errorf("set subtitle result: %w", err)
 	}
 	return nil
 }

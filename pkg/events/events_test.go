@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Ajay01103/go-notion/pkg/pipelinepb"
+	"github.com/Ajay01103/go-mux/pkg/pipelinepb"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,8 +38,57 @@ func TestMessageIDs(t *testing.T) {
 	if got, want := UploadMessageID("asset-1"), "asset:asset-1:upload"; got != want {
 		t.Fatalf("upload message ID = %q, want %q", got, want)
 	}
-	if got, want := TerminalMessageID("run-1", "completed"), "run:run-1:completed"; got != want {
+	if got, want := TerminalMessageID("run-1", "completed", 0), "run:run-1:completed:gen:0"; got != want {
 		t.Fatalf("terminal message ID = %q, want %q", got, want)
+	}
+	if got, want := TerminalMessageID("run-1", "failed", 2), "run:run-1:failed:gen:2"; got != want {
+		t.Fatalf("terminal message ID = %q, want %q", got, want)
+	}
+	if got, want := StepTerminalMessageID("run-1", "transcode-completed", 1), "run:run-1:transcode-completed:attempt:1"; got != want {
+		t.Fatalf("step terminal message ID = %q, want %q", got, want)
+	}
+}
+
+func TestMaxDeliverConsistency(t *testing.T) {
+	for name, limit := range WorkerMaxDeliver {
+		if limit != MaxDeliverUnlimited && limit <= len(workerBackOff) {
+			t.Errorf("worker %q MaxDeliver=%d must be -1 or > len(workerBackOff)=%d",
+				name, limit, len(workerBackOff))
+		}
+	}
+	for name, limit := range OrchestratorMaxDeliver {
+		if limit != MaxDeliverUnlimited {
+			t.Errorf("orchestrator consumer %q MaxDeliver=%d must be %d (unlimited)",
+				name, limit, MaxDeliverUnlimited)
+		}
+	}
+}
+
+func TestConsumerFilterCoverage(t *testing.T) {
+	mustCover := []string{
+		SubjectProbeCompleted, SubjectProbeFailed,
+		SubjectTranscodeCompleted, SubjectTranscodeFailed,
+		SubjectThumbnailCompleted, SubjectThumbnailFailed,
+		SubjectStoryboardCompleted, SubjectStoryboardFailed,
+		SubjectSubtitleCompleted, SubjectSubtitleFailed,
+	}
+	covered := map[string]string{}
+	for _, cfg := range JobConsumerConfigs() {
+		subjects := cfg.FilterSubjects
+		if cfg.FilterSubject != "" {
+			subjects = []string{cfg.FilterSubject}
+		}
+		for _, s := range subjects {
+			if existing, dup := covered[s]; dup {
+				t.Errorf("subject %q in both %q and %q — overlap forbidden on WorkQueue", s, existing, cfg.Name)
+			}
+			covered[s] = cfg.Name
+		}
+	}
+	for _, s := range mustCover {
+		if _, ok := covered[s]; !ok {
+			t.Errorf("subject %q not covered by any job consumer filter", s)
+		}
 	}
 }
 

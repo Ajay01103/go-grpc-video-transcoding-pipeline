@@ -22,15 +22,16 @@ const (
 )
 
 type PlaybackRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PlaybackId    string                 `protobuf:"bytes,1,opt,name=playback_id,json=playbackId,proto3" json:"playback_id,omitempty"`
-	AssetId       string                 `protobuf:"bytes,2,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Policy        string                 `protobuf:"bytes,3,opt,name=policy,proto3" json:"policy,omitempty"`
-	SigningKeyId  string                 `protobuf:"bytes,4,opt,name=signing_key_id,json=signingKeyId,proto3" json:"signing_key_id,omitempty"`
-	Revoked       bool                   `protobuf:"varint,5,opt,name=revoked,proto3" json:"revoked,omitempty"`
-	CreatedAt     string                 `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	PlaybackId     string                 `protobuf:"bytes,1,opt,name=playback_id,json=playbackId,proto3" json:"playback_id,omitempty"`
+	AssetId        string                 `protobuf:"bytes,2,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
+	Policy         string                 `protobuf:"bytes,3,opt,name=policy,proto3" json:"policy,omitempty"`
+	SigningKeyId   string                 `protobuf:"bytes,4,opt,name=signing_key_id,json=signingKeyId,proto3" json:"signing_key_id,omitempty"`
+	Revoked        bool                   `protobuf:"varint,5,opt,name=revoked,proto3" json:"revoked,omitempty"`
+	CreatedAt      string                 `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ArtifactPrefix string                 `protobuf:"bytes,7,opt,name=artifact_prefix,json=artifactPrefix,proto3" json:"artifact_prefix,omitempty"` // RustFS/CDN prefix holding hls/, thumbnails/, storyboard/, subtitles/
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PlaybackRecord) Reset() {
@@ -105,12 +106,20 @@ func (x *PlaybackRecord) GetCreatedAt() string {
 	return ""
 }
 
+func (x *PlaybackRecord) GetArtifactPrefix() string {
+	if x != nil {
+		return x.ArtifactPrefix
+	}
+	return ""
+}
+
 type CreatePlaybackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AssetId       string                 `protobuf:"bytes,1,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
-	Policy        string                 `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	AssetId        string                 `protobuf:"bytes,1,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
+	Policy         string                 `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
+	ArtifactPrefix string                 `protobuf:"bytes,3,opt,name=artifact_prefix,json=artifactPrefix,proto3" json:"artifact_prefix,omitempty"` // set by the orchestrator when publishing artifacts
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreatePlaybackRequest) Reset() {
@@ -153,6 +162,13 @@ func (x *CreatePlaybackRequest) GetAssetId() string {
 func (x *CreatePlaybackRequest) GetPolicy() string {
 	if x != nil {
 		return x.Policy
+	}
+	return ""
+}
+
+func (x *CreatePlaybackRequest) GetArtifactPrefix() string {
+	if x != nil {
+		return x.ArtifactPrefix
 	}
 	return ""
 }
@@ -489,11 +505,223 @@ func (x *IssueTokenResponse) GetToken() string {
 	return ""
 }
 
+type PlayerSubtitleTrack struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Lang          string                 `protobuf:"bytes,2,opt,name=lang,proto3" json:"lang,omitempty"`
+	Label         string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	Auto          bool                   `protobuf:"varint,4,opt,name=auto,proto3" json:"auto,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlayerSubtitleTrack) Reset() {
+	*x = PlayerSubtitleTrack{}
+	mi := &file_playback_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlayerSubtitleTrack) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlayerSubtitleTrack) ProtoMessage() {}
+
+func (x *PlayerSubtitleTrack) ProtoReflect() protoreflect.Message {
+	mi := &file_playback_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlayerSubtitleTrack.ProtoReflect.Descriptor instead.
+func (*PlayerSubtitleTrack) Descriptor() ([]byte, []int) {
+	return file_playback_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *PlayerSubtitleTrack) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *PlayerSubtitleTrack) GetLang() string {
+	if x != nil {
+		return x.Lang
+	}
+	return ""
+}
+
+func (x *PlayerSubtitleTrack) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *PlayerSubtitleTrack) GetAuto() bool {
+	if x != nil {
+		return x.Auto
+	}
+	return false
+}
+
+type GetPlayerConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlaybackId    string                 `protobuf:"bytes,1,opt,name=playback_id,json=playbackId,proto3" json:"playback_id,omitempty"`
+	CdnUrl        string                 `protobuf:"bytes,2,opt,name=cdn_url,json=cdnUrl,proto3" json:"cdn_url,omitempty"` // optional override; service default when empty
+	Languages     []string               `protobuf:"bytes,3,rep,name=languages,proto3" json:"languages,omitempty"`         // subtitle languages; service default when empty
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPlayerConfigRequest) Reset() {
+	*x = GetPlayerConfigRequest{}
+	mi := &file_playback_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPlayerConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPlayerConfigRequest) ProtoMessage() {}
+
+func (x *GetPlayerConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_playback_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPlayerConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetPlayerConfigRequest) Descriptor() ([]byte, []int) {
+	return file_playback_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GetPlayerConfigRequest) GetPlaybackId() string {
+	if x != nil {
+		return x.PlaybackId
+	}
+	return ""
+}
+
+func (x *GetPlayerConfigRequest) GetCdnUrl() string {
+	if x != nil {
+		return x.CdnUrl
+	}
+	return ""
+}
+
+func (x *GetPlayerConfigRequest) GetLanguages() []string {
+	if x != nil {
+		return x.Languages
+	}
+	return nil
+}
+
+type GetPlayerConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Src           string                 `protobuf:"bytes,1,opt,name=src,proto3" json:"src,omitempty"`                                          // HLS master playlist URL
+	Poster        string                 `protobuf:"bytes,2,opt,name=poster,proto3" json:"poster,omitempty"`                                    // poster/thumbnail image URL
+	StoryboardSrc string                 `protobuf:"bytes,3,opt,name=storyboard_src,json=storyboardSrc,proto3" json:"storyboard_src,omitempty"` // scrubbing storyboard VTT URL
+	Subtitles     []*PlayerSubtitleTrack `protobuf:"bytes,4,rep,name=subtitles,proto3" json:"subtitles,omitempty"`
+	AssetId       string                 `protobuf:"bytes,5,opt,name=asset_id,json=assetId,proto3" json:"asset_id,omitempty"`
+	PlaybackId    string                 `protobuf:"bytes,6,opt,name=playback_id,json=playbackId,proto3" json:"playback_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPlayerConfigResponse) Reset() {
+	*x = GetPlayerConfigResponse{}
+	mi := &file_playback_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPlayerConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPlayerConfigResponse) ProtoMessage() {}
+
+func (x *GetPlayerConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_playback_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPlayerConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetPlayerConfigResponse) Descriptor() ([]byte, []int) {
+	return file_playback_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetPlayerConfigResponse) GetSrc() string {
+	if x != nil {
+		return x.Src
+	}
+	return ""
+}
+
+func (x *GetPlayerConfigResponse) GetPoster() string {
+	if x != nil {
+		return x.Poster
+	}
+	return ""
+}
+
+func (x *GetPlayerConfigResponse) GetStoryboardSrc() string {
+	if x != nil {
+		return x.StoryboardSrc
+	}
+	return ""
+}
+
+func (x *GetPlayerConfigResponse) GetSubtitles() []*PlayerSubtitleTrack {
+	if x != nil {
+		return x.Subtitles
+	}
+	return nil
+}
+
+func (x *GetPlayerConfigResponse) GetAssetId() string {
+	if x != nil {
+		return x.AssetId
+	}
+	return ""
+}
+
+func (x *GetPlayerConfigResponse) GetPlaybackId() string {
+	if x != nil {
+		return x.PlaybackId
+	}
+	return ""
+}
+
 var File_playback_proto protoreflect.FileDescriptor
 
 const file_playback_proto_rawDesc = "" +
 	"\n" +
-	"\x0eplayback.proto\x12\bplayback\"\xc3\x01\n" +
+	"\x0eplayback.proto\x12\bplayback\"\xec\x01\n" +
 	"\x0ePlaybackRecord\x12\x1f\n" +
 	"\vplayback_id\x18\x01 \x01(\tR\n" +
 	"playbackId\x12\x19\n" +
@@ -502,10 +730,12 @@ const file_playback_proto_rawDesc = "" +
 	"\x0esigning_key_id\x18\x04 \x01(\tR\fsigningKeyId\x12\x18\n" +
 	"\arevoked\x18\x05 \x01(\bR\arevoked\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\x06 \x01(\tR\tcreatedAt\"J\n" +
+	"created_at\x18\x06 \x01(\tR\tcreatedAt\x12'\n" +
+	"\x0fartifact_prefix\x18\a \x01(\tR\x0eartifactPrefix\"s\n" +
 	"\x15CreatePlaybackRequest\x12\x19\n" +
 	"\basset_id\x18\x01 \x01(\tR\aassetId\x12\x16\n" +
-	"\x06policy\x18\x02 \x01(\tR\x06policy\"N\n" +
+	"\x06policy\x18\x02 \x01(\tR\x06policy\x12'\n" +
+	"\x0fartifact_prefix\x18\x03 \x01(\tR\x0eartifactPrefix\"N\n" +
 	"\x16CreatePlaybackResponse\x124\n" +
 	"\bplayback\x18\x01 \x01(\v2\x18.playback.PlaybackRecordR\bplayback\"9\n" +
 	"\x16ResolvePlaybackRequest\x12\x1f\n" +
@@ -526,13 +756,32 @@ const file_playback_proto_rawDesc = "" +
 	"\vttl_seconds\x18\x02 \x01(\x03R\n" +
 	"ttlSeconds\"*\n" +
 	"\x12IssueTokenResponse\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token2\xdc\x02\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"e\n" +
+	"\x13PlayerSubtitleTrack\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x12\n" +
+	"\x04lang\x18\x02 \x01(\tR\x04lang\x12\x14\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\x12\x12\n" +
+	"\x04auto\x18\x04 \x01(\bR\x04auto\"p\n" +
+	"\x16GetPlayerConfigRequest\x12\x1f\n" +
+	"\vplayback_id\x18\x01 \x01(\tR\n" +
+	"playbackId\x12\x17\n" +
+	"\acdn_url\x18\x02 \x01(\tR\x06cdnUrl\x12\x1c\n" +
+	"\tlanguages\x18\x03 \x03(\tR\tlanguages\"\xe3\x01\n" +
+	"\x17GetPlayerConfigResponse\x12\x10\n" +
+	"\x03src\x18\x01 \x01(\tR\x03src\x12\x16\n" +
+	"\x06poster\x18\x02 \x01(\tR\x06poster\x12%\n" +
+	"\x0estoryboard_src\x18\x03 \x01(\tR\rstoryboardSrc\x12;\n" +
+	"\tsubtitles\x18\x04 \x03(\v2\x1d.playback.PlayerSubtitleTrackR\tsubtitles\x12\x19\n" +
+	"\basset_id\x18\x05 \x01(\tR\aassetId\x12\x1f\n" +
+	"\vplayback_id\x18\x06 \x01(\tR\n" +
+	"playbackId2\xb4\x03\n" +
 	"\x0fPlaybackService\x12S\n" +
 	"\x0eCreatePlayback\x12\x1f.playback.CreatePlaybackRequest\x1a .playback.CreatePlaybackResponse\x12V\n" +
 	"\x0fResolvePlayback\x12 .playback.ResolvePlaybackRequest\x1a!.playback.ResolvePlaybackResponse\x12S\n" +
 	"\x0eRevokePlayback\x12\x1f.playback.RevokePlaybackRequest\x1a .playback.RevokePlaybackResponse\x12G\n" +
 	"\n" +
-	"IssueToken\x12\x1b.playback.IssueTokenRequest\x1a\x1c.playback.IssueTokenResponseB3Z1github.com/Ajay01103/go-notion/playback/gen/pb;pbb\x06proto3"
+	"IssueToken\x12\x1b.playback.IssueTokenRequest\x1a\x1c.playback.IssueTokenResponse\x12V\n" +
+	"\x0fGetPlayerConfig\x12 .playback.GetPlayerConfigRequest\x1a!.playback.GetPlayerConfigResponseB0Z.github.com/Ajay01103/go-mux/playback/gen/pb;pbb\x06proto3"
 
 var (
 	file_playback_proto_rawDescOnce sync.Once
@@ -546,7 +795,7 @@ func file_playback_proto_rawDescGZIP() []byte {
 	return file_playback_proto_rawDescData
 }
 
-var file_playback_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_playback_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_playback_proto_goTypes = []any{
 	(*PlaybackRecord)(nil),          // 0: playback.PlaybackRecord
 	(*CreatePlaybackRequest)(nil),   // 1: playback.CreatePlaybackRequest
@@ -557,22 +806,28 @@ var file_playback_proto_goTypes = []any{
 	(*RevokePlaybackResponse)(nil),  // 6: playback.RevokePlaybackResponse
 	(*IssueTokenRequest)(nil),       // 7: playback.IssueTokenRequest
 	(*IssueTokenResponse)(nil),      // 8: playback.IssueTokenResponse
+	(*PlayerSubtitleTrack)(nil),     // 9: playback.PlayerSubtitleTrack
+	(*GetPlayerConfigRequest)(nil),  // 10: playback.GetPlayerConfigRequest
+	(*GetPlayerConfigResponse)(nil), // 11: playback.GetPlayerConfigResponse
 }
 var file_playback_proto_depIdxs = []int32{
-	0, // 0: playback.CreatePlaybackResponse.playback:type_name -> playback.PlaybackRecord
-	1, // 1: playback.PlaybackService.CreatePlayback:input_type -> playback.CreatePlaybackRequest
-	3, // 2: playback.PlaybackService.ResolvePlayback:input_type -> playback.ResolvePlaybackRequest
-	5, // 3: playback.PlaybackService.RevokePlayback:input_type -> playback.RevokePlaybackRequest
-	7, // 4: playback.PlaybackService.IssueToken:input_type -> playback.IssueTokenRequest
-	2, // 5: playback.PlaybackService.CreatePlayback:output_type -> playback.CreatePlaybackResponse
-	4, // 6: playback.PlaybackService.ResolvePlayback:output_type -> playback.ResolvePlaybackResponse
-	6, // 7: playback.PlaybackService.RevokePlayback:output_type -> playback.RevokePlaybackResponse
-	8, // 8: playback.PlaybackService.IssueToken:output_type -> playback.IssueTokenResponse
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0,  // 0: playback.CreatePlaybackResponse.playback:type_name -> playback.PlaybackRecord
+	9,  // 1: playback.GetPlayerConfigResponse.subtitles:type_name -> playback.PlayerSubtitleTrack
+	1,  // 2: playback.PlaybackService.CreatePlayback:input_type -> playback.CreatePlaybackRequest
+	3,  // 3: playback.PlaybackService.ResolvePlayback:input_type -> playback.ResolvePlaybackRequest
+	5,  // 4: playback.PlaybackService.RevokePlayback:input_type -> playback.RevokePlaybackRequest
+	7,  // 5: playback.PlaybackService.IssueToken:input_type -> playback.IssueTokenRequest
+	10, // 6: playback.PlaybackService.GetPlayerConfig:input_type -> playback.GetPlayerConfigRequest
+	2,  // 7: playback.PlaybackService.CreatePlayback:output_type -> playback.CreatePlaybackResponse
+	4,  // 8: playback.PlaybackService.ResolvePlayback:output_type -> playback.ResolvePlaybackResponse
+	6,  // 9: playback.PlaybackService.RevokePlayback:output_type -> playback.RevokePlaybackResponse
+	8,  // 10: playback.PlaybackService.IssueToken:output_type -> playback.IssueTokenResponse
+	11, // 11: playback.PlaybackService.GetPlayerConfig:output_type -> playback.GetPlayerConfigResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_playback_proto_init() }
@@ -586,7 +841,7 @@ func file_playback_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_playback_proto_rawDesc), len(file_playback_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

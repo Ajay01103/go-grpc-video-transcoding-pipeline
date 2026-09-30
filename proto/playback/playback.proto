@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package playback;
 
-option go_package = "github.com/Ajay01103/go-notion/playback/gen/pb;pb";
+option go_package = "github.com/Ajay01103/go-mux/playback/gen/pb;pb";
 
 message PlaybackRecord {
   string playback_id = 1;
@@ -11,11 +11,13 @@ message PlaybackRecord {
   string signing_key_id = 4;
   bool revoked = 5;
   string created_at = 6;
+  string artifact_prefix = 7; // RustFS/CDN prefix holding hls/, thumbnails/, storyboard/, subtitles/
 }
 
 message CreatePlaybackRequest {
   string asset_id = 1;
   string policy = 2;
+  string artifact_prefix = 3; // set by the orchestrator when publishing artifacts
 }
 
 message CreatePlaybackResponse {
@@ -49,9 +51,32 @@ message IssueTokenResponse {
   string token = 1;
 }
 
+message PlayerSubtitleTrack {
+  string url = 1;
+  string lang = 2;
+  string label = 3;
+  bool auto = 4;
+}
+
+message GetPlayerConfigRequest {
+  string playback_id = 1;
+  string cdn_url = 2;           // optional override; service default when empty
+  repeated string languages = 3; // subtitle languages; service default when empty
+}
+
+message GetPlayerConfigResponse {
+  string src = 1;              // HLS master playlist URL
+  string poster = 2;           // poster/thumbnail image URL
+  string storyboard_src = 3;   // scrubbing storyboard VTT URL
+  repeated PlayerSubtitleTrack subtitles = 4;
+  string asset_id = 5;
+  string playback_id = 6;
+}
+
 service PlaybackService {
   rpc CreatePlayback(CreatePlaybackRequest) returns (CreatePlaybackResponse);
   rpc ResolvePlayback(ResolvePlaybackRequest) returns (ResolvePlaybackResponse);
   rpc RevokePlayback(RevokePlaybackRequest) returns (RevokePlaybackResponse);
   rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
+  rpc GetPlayerConfig(GetPlayerConfigRequest) returns (GetPlayerConfigResponse);
 }

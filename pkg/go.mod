@@ -1,6 +1,6 @@
-module github.com/Ajay01103/go-notion/pkg
+module github.com/Ajay01103/go-mux/pkg
 
-go 1.25.0
+go 1.27.0
 
 require (
 	connectrpc.com/connect v1.19.1
@@ -13,7 +13,7 @@ require (
 	github.com/nats-io/nats.go v1.47.0
 	github.com/redis/go-redis/v9 v9.18.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.22.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -26,7 +26,7 @@ require (
 	github.com/goccy/go-json v0.10.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.3 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
@@ -40,7 +40,7 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 )
